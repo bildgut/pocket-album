@@ -24,6 +24,41 @@ enum PhoneTeilenAblage {
         return letzter
     }
 
+    /// Name für eine lokale Offline-Datei: Stamm des Originalnamens, Endung der
+    /// Datei, die wirklich geteilt wird — eine Vorschau von `IMG_1.HEIC` ist ein
+    /// JPEG und heißt deshalb `IMG_1.jpg`.
+    static func teilName(originalName: String, lokal: URL) -> String {
+        let sicher = sichererName(originalName, assetId: lokal.lastPathComponent)
+        let endung = lokal.pathExtension
+        guard OfflineFassung.aus(pfad: lokal.lastPathComponent) != .original, !endung.isEmpty else {
+            return sicher
+        }
+        return ((sicher as NSString).deletingPathExtension as String) + "." + endung
+    }
+
+    /// Legt die Datei unter ihrem Originalnamen in einen frischen `Teilen-`-Ordner
+    /// — als harten Link (kein zweiter Speicherplatz), notfalls als Kopie. Räumt
+    /// dabei alte Ordner weg. `nil`, wenn beides scheitert.
+    static func benannteKopie(von lokal: URL, originalName: String,
+                              basis: URL = FileManager.default.temporaryDirectory) -> URL? {
+        raeumeAuf(in: basis)
+        let fm = FileManager.default
+        let ordner = basis.appending(path: "\(praefix)\(UUID().uuidString)", directoryHint: .isDirectory)
+        let ziel = ordner.appending(path: teilName(originalName: originalName, lokal: lokal))
+        do {
+            try fm.createDirectory(at: ordner, withIntermediateDirectories: true)
+            do {
+                try fm.linkItem(at: lokal, to: ziel)
+            } catch {
+                try fm.copyItem(at: lokal, to: ziel)
+            }
+            return ziel
+        } catch {
+            try? fm.removeItem(at: ordner)
+            return nil
+        }
+    }
+
     /// Entfernt `Teilen-*`-Ordner in `basis`, deren Änderungsdatum älter als
     /// `hoechstalter` ist. Liefert die Zahl der entfernten Ordner.
     @discardableResult

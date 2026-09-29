@@ -15,7 +15,8 @@ final class ImmichAPIClient {
         baseURL: URL,
         apiKey: String,
         sessionConfiguration: URLSessionConfiguration = .default,
-        editedAssets: EditedAssetsStore = .shared
+        editedAssets: EditedAssetsStore = .shared,
+        anfrageFrist: TimeInterval = 30
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -31,7 +32,10 @@ final class ImmichAPIClient {
             "x-api-key": apiKey,
             "Accept": "application/json",
         ]
-        config.timeoutIntervalForRequest = 30
+        // Frist je Anfrage. Für Ping/Version/Schlüssel reicht ``kurzeFrist``: Bei
+        // ausgeschaltetem VPN/Tailscale kommt kein Sofortfehler, sondern Schweigen —
+        // sonst 30 s „Verbinde…“ trotz vorhandener Offline-Daten.
+        config.timeoutIntervalForRequest = anfrageFrist
         // HTTP/2 multiplexing: URLSession enables it automatically when the server
         // supports it. HTTP/1.1 pipelining (`httpShouldUsePipelining`) is ignored by
         // the modern loader, so it is no longer set.
@@ -45,6 +49,9 @@ final class ImmichAPIClient {
         session.finishTasksAndInvalidate()
         sessionAuthSession.finishTasksAndInvalidate()
     }
+
+    /// Frist für die kurzen Erreichbarkeitsprüfungen (Ping, Version, Schlüssel).
+    static let kurzeFrist: TimeInterval = 6
 
     // Cached base paths for URL construction (avoids per-call URLComponents parsing)
     private let assetBasePath: URL
@@ -214,6 +221,11 @@ final class ImmichAPIClient {
     func ping() async throws -> Bool {
         let url = baseURL.appending(path: "api/server/ping")
         let (data, response) = try await session.data(from: url)
+        // 5xx: Der Proxy steht, Immich dahinter nicht — „nicht erreichbar“, nicht
+        // „kein Immich“.
+        if let status = (response as? HTTPURLResponse)?.statusCode, (500..<600).contains(status) {
+            throw APIError.serverFehler(status)
+        }
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             return false
         }
@@ -246,10 +258,23 @@ final class ImmichAPIClient {
         let url = baseURL.appending(path: "api/albums")
         let (_, response) = try await session.data(from: url)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
-        switch http.statusCode {
+        // Eine Weiterleitung auf denselben Host lässt ``SichereWeiterleitung`` zu —
+        // landet sie auf einer Anmeldeseite, käme ein 200 mit HTML zurück.
+        if let ziel = http.url, ziel.path != url.path { throw APIError.anmeldeseiteDazwischen }
+        try Self.bewerteSchluesselAntwort(status: http.statusCode)
+    }
+
+    /// Nur 2xx heißt „gültig“. Eine Weiterleitung (Authelia, Cloudflare Access …)
+    /// bricht ``SichereWeiterleitung`` ab — die 3xx kommt hier an und galt früher
+    /// als Erfolg, ebenso ein 502 des Proxys.
+    static func bewerteSchluesselAntwort(status: Int) throws {
+        switch status {
+        case 200..<300: return
+        case 300..<400: throw APIError.anmeldeseiteDazwischen
         case 401: throw APIError.apiKeyRejected
         case 403: throw APIError.apiKeyLacksPermission("album.read")
-        default: return
+        case 500..<600: throw APIError.serverFehler(status)
+        default: throw APIError.httpError(status)
         }
     }
 
@@ -2056,6 +2081,12 @@ enum APIError: LocalizedError, Equatable {
     case apiKeyRejected
     /// Der Key ist gültig, aber ihm fehlt die genannte Berechtigung (403).
     case apiKeyLacksPermission(String)
+    /// Ein Proxy leitet auf eine Anmeldeseite um (3xx) — nicht unterstützt.
+    case anmeldeseiteDazwischen
+    /// Der Server antwortet mit 5xx.
+    case serverFehler(Int)
+    /// Es antwortet etwas, aber kein Immich (z. B. HTML mit Status 200).
+    case keinImmich
 
     var errorDescription: String? {
         switch self {
@@ -2065,6 +2096,10 @@ enum APIError: LocalizedError, Equatable {
         case .operationFailed(let msg): return msg
         case .apiKeyRejected: return "The server doesn't accept this API key."
         case .apiKeyLacksPermission(let recht): return "This API key is missing the permission \(recht)."
+        case .anmeldeseiteDazwischen:
+            return "The server redirects to a login page — proxy logins are not supported."
+        case .serverFehler(let code): return "The server responded with an error (HTTP \(code))."
+        case .keinImmich: return "This is not an Immich server."
         }
     }
 

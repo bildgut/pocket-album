@@ -26,4 +26,20 @@ struct PhoneTeilenWegTests {
         #expect(PhoneTeilenWeg.bestimme(lokal: nil, hatServer: true) == .server(ersatz: nil))
         #expect(PhoneTeilenWeg.bestimme(lokal: nil, hatServer: false) == .nichts)
     }
+
+    @Test func lokaleDateiWirdMitOriginalnamenGeteilt() throws {
+        let fm = FileManager.default
+        let ordner = fm.temporaryDirectory.appending(path: "teilen-weg-\(UUID().uuidString)")
+        try fm.createDirectory(at: ordner, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: ordner) }
+        let datei = ordner.appending(path: "1234-abcd.heic")
+        try Data("X".utf8).write(to: datei)
+
+        let weg = PhoneTeilenWeg.bestimme(lokal: datei, hatServer: false) { id in
+            id == "1234-abcd" ? "IMG_0042.HEIC" : nil
+        }
+        guard case .lokal(let url) = weg else { Issue.record("erwartet .lokal"); return }
+        #expect(url.lastPathComponent == "IMG_0042.HEIC")
+        try? fm.removeItem(at: url.deletingLastPathComponent())
+    }
 }

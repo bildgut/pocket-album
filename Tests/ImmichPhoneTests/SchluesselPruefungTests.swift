@@ -38,10 +38,23 @@ struct SchluesselPruefungTests {
         await #expect(throws: APIError.apiKeyLacksPermission("album.read")) { try await pruefe(status: 403) }
     }
 
-    @Test("Andere Serverfehler blockieren das Verbinden nicht")
-    func andererFehler() async throws {
-        // Ein 500 sagt nichts über den Schlüssel; die eigentlichen Abrufe melden ihn selbst.
-        try await pruefe(status: 500)
+    // Früher galt alles außer 401/403 als gültig — auch die 302 eines
+    // Authelia-/Cloudflare-Access-Proxys und das 502 eines Proxys ohne Immich dahinter.
+    @Test("5xx ist ein Serverfehler, kein gültiger Key")
+    func serverFehler() async {
+        await #expect(throws: APIError.serverFehler(500)) { try await pruefe(status: 500) }
+        await #expect(throws: APIError.serverFehler(502)) { try await pruefe(status: 502) }
+    }
+
+    @Test("3xx heißt: ein Proxy will eine Anmeldung")
+    func weiterleitung() async {
+        await #expect(throws: APIError.anmeldeseiteDazwischen) { try await pruefe(status: 302) }
+    }
+
+    @Test("Nur 2xx ist gültig, anderes ist ein allgemeiner Fehler")
+    func bewertung() throws {
+        try ImmichAPIClient.bewerteSchluesselAntwort(status: 204)
+        #expect(throws: APIError.httpError(404)) { try ImmichAPIClient.bewerteSchluesselAntwort(status: 404) }
     }
 
     @Test("Die eigenen Key-Rechte kommen aus /api/api-keys/me")

@@ -20,11 +20,14 @@ struct OnboardingKeySchritt: View {
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 OnboardingFeld(platzhalter: OnboardingTexts.keyPlatzhalter, text: $eingabe, monospaced: true) {
-                    Button(OnboardingTexts.einfuegen) {
-                        if let text = UIPasteboard.general.string { eingabe = text }
+                    // `PasteButton`: fügt ohne die Systemrückfrage „… möchte einfügen“ ein.
+                    PasteButton(payloadType: String.self) { texte in
+                        guard let text = texte.first else { return }
+                        Task { @MainActor in eingabe = text }
                     }
+                    .labelStyle(.titleOnly)
+                    .buttonBorderShape(.capsule)
                     .font(.footnote.weight(.semibold))
-                    .buttonStyle(.bordered)
                     .tint(farben.text)
                 }
                 .onChange(of: eingabe) { _, neu in Task { await modell.pruefeKey(neu) } }

@@ -37,4 +37,31 @@ struct PhoneTeilenAblageTests {
         #expect(fm.fileExists(atPath: neu.path))
         #expect(fm.fileExists(atPath: fremd.path))
     }
+
+    @Test("Offline-Dateien bekommen den Originalnamen, Vorschauen ihre echte Endung")
+    func teilNamen() {
+        let orig = URL(fileURLWithPath: "/c/2024-01/0f1e.heic")
+        let vor = URL(fileURLWithPath: "/c/2024-01/0f1e.vorschau.jpg")
+        let klein = URL(fileURLWithPath: "/c/2024-01/0f1e.klein.mp4")
+        #expect(PhoneTeilenAblage.teilName(originalName: "IMG_1.HEIC", lokal: orig) == "IMG_1.HEIC")
+        #expect(PhoneTeilenAblage.teilName(originalName: "IMG_1.HEIC", lokal: vor) == "IMG_1.jpg")
+        #expect(PhoneTeilenAblage.teilName(originalName: "Clip.MOV", lokal: klein) == "Clip.mp4")
+        #expect(PhoneTeilenAblage.teilName(originalName: "../x/IMG_2.JPG", lokal: orig) == "IMG_2.JPG")
+    }
+
+    @Test("Benannte Kopie liegt im Teilen-Ordner und hat den Inhalt der Datei")
+    func benannteKopie() throws {
+        let fm = FileManager.default
+        let basis = fm.temporaryDirectory.appending(path: "teilen-test-\(UUID().uuidString)")
+        try fm.createDirectory(at: basis, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: basis) }
+        let quelle = basis.appending(path: "abc.vorschau.jpg")
+        try Data("BILD".utf8).write(to: quelle)
+
+        let ziel = try #require(PhoneTeilenAblage.benannteKopie(von: quelle, originalName: "Urlaub.HEIC", basis: basis))
+        #expect(ziel.lastPathComponent == "Urlaub.jpg")
+        #expect(ziel.deletingLastPathComponent().lastPathComponent.hasPrefix(PhoneTeilenAblage.praefix))
+        #expect(try Data(contentsOf: ziel) == Data("BILD".utf8))
+        #expect(fm.fileExists(atPath: quelle.path))
+    }
 }

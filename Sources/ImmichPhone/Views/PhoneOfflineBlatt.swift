@@ -24,7 +24,7 @@ struct PhoneOfflineBlatt: View {
                 } header: {
                     Text(Self.fotosTitel)
                 } footer: {
-                    Text(Self.vorschauHinweis)
+                    Text(Self.hinweis(fuer: modell.wahl.fotos))
                 }
                 Section {
                     Picker(Self.videosTitel, selection: $modell.wahl.videos) {
@@ -36,7 +36,7 @@ struct PhoneOfflineBlatt: View {
                 } header: {
                     Text(Self.videosTitel)
                 } footer: {
-                    Text(Self.kleinHinweis)
+                    Text(Self.hinweis(fuer: modell.wahl.videos))
                 }
                 Section {
                     Toggle(Self.mobilfunkText, isOn: $modell.wahl.mobilfunk)
@@ -113,8 +113,22 @@ struct PhoneOfflineBlatt: View {
     private static let originalText = String(localized: "Original")
     private static let keineText = String(localized: "None")
     private static let kleinText = String(localized: "Small")
-    private static let vorschauHinweis = String(localized: "Previews look sharp on screen and need about a tenth of the space.")
-    private static let kleinHinweis = String(localized: "Small videos are converted by the server and play everywhere.")
+    /// Erklärtext zur **gewählten** Option — vorher stand hier immer der
+    /// Vorschau- bzw. Klein-Text, auch wenn „Original“ oder „Keine“ gewählt war.
+    static func hinweis(fuer fotos: OfflineWahl.Fotos) -> String {
+        switch fotos {
+        case .vorschau: String(localized: "Previews look sharp on screen and need about a tenth of the space.")
+        case .original: String(localized: "Originals keep every detail and all metadata, and need the most space.")
+        }
+    }
+
+    static func hinweis(fuer videos: OfflineWahl.Videos) -> String {
+        switch videos {
+        case .keine: String(localized: "Videos stay in the cloud and play only when you're online.")
+        case .klein: String(localized: "Small videos are converted by the server and play everywhere.")
+        case .original: String(localized: "Original videos keep full quality but can take up a lot of space.")
+        }
+    }
     private static let mobilfunkText = String(localized: "Also over Cellular")
     private static let groesseText = String(localized: "Estimated Size")
     private static let freiText = String(localized: "Free on This iPhone")

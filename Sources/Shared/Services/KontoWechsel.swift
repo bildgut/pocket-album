@@ -27,4 +27,37 @@ enum KontoWechsel {
         guard let kennung else { return }
         defaults.set(kennung, forKey: schluessel)
     }
+
+    // MARK: - Rückfall über die Zugangsdaten
+
+    static let zugangSchluessel = "letzterZugang"
+
+    /// Fingerabdruck aus Server-Adresse und API-Key — der Key selbst landet nie in
+    /// den `UserDefaults`.
+    static func zugang(serverURL: String, apiKey: String) -> String {
+        "\(serverURL.lowercased())|\(KeyRechteSpeicher.fingerabdruck(apiKey))"
+    }
+
+    /// Mit Rückfall, wenn eine der beiden Kennungen fehlt.
+    ///
+    /// **Bewusste Entscheidung:** Ist das Konto nicht ermittelbar (Schlüssel ohne
+    /// `user.read` und ohne eigenes Album), aber die Zugangsdaten sind andere als beim
+    /// letzten Mal (anderer Server **oder** anderer Key), wird vorsichtshalber geleert.
+    /// Ein falsches „Wechsel“ kostet einen Nachsync und neu geladene Offline-Alben; ein
+    /// falsches „kein Wechsel“ zeigt Fotos eines fremden Kontos. Kein früherer Zugang
+    /// (Erstanmeldung, Update) bleibt „kein Wechsel“ — dann gibt es nichts Fremdes.
+    static func istWechsel(bisher: String?, neu: String?,
+                           bisherZugang: String?, neuZugang: String) -> Bool {
+        if let bisher, let neu { return bisher != neu }
+        guard let bisherZugang else { return false }
+        return bisherZugang != neuZugang
+    }
+
+    static func bisherZugang(_ defaults: UserDefaults) -> String? {
+        defaults.string(forKey: zugangSchluessel)
+    }
+
+    static func merkeZugang(_ zugang: String, in defaults: UserDefaults) {
+        defaults.set(zugang, forKey: zugangSchluessel)
+    }
 }

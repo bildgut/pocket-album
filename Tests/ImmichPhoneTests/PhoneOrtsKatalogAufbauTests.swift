@@ -123,8 +123,9 @@ struct PhoneOrtsKatalogAufbauTests {
         #expect(k.nachZuletzt.last?.name == "Greece")
     }
 
-    @Test("Gezählte Städte überleben den Lauf")
-    func staedteAnzahlenBleiben() async throws {
+    /// Früher überlebten sie jeden Lauf und wurden so nie aufgefrischt (Befund 6).
+    @Test("Gezählte Städte werden beim Neuaufbau verworfen")
+    func staedteAnzahlenVerworfen() async throws {
         OrteMockURLProtocol.registriere(host: host, server())
         defer { OrteMockURLProtocol.entferne(host: host) }
 
@@ -132,7 +133,7 @@ struct PhoneOrtsKatalogAufbauTests {
         vorher.staedteAnzahlen["Japan"] = [PhoneOrtsChip(id: "Kyoto", titel: "Kyoto", anzahl: 758)]
 
         let k = try await PhoneOrtsKatalogAufbau.aufbauen(apiClient: OrteMockURLProtocol.client(host: host), vorher: vorher, jetzt: jetzt)
-        #expect(k.staedteAnzahlen == vorher.staedteAnzahlen)
+        #expect(k.staedteAnzahlen.isEmpty)
     }
 
     @Test("Scheitert die Länderliste, wirft der Lauf")

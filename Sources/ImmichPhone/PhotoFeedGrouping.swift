@@ -105,6 +105,13 @@ enum PhotoFeedGrouping {
     /// nach Relevanz sortiert; nach Tagen gruppiert stünden die besten verstreut
     /// zwischen schwachen, denn CLIP liefert ohne Schwelle fast immer die volle Menge.
     /// Ausgefiltert wird wie in ``build(assets:)``.
+    ///
+    /// **Keine Schwelle möglich (geprüft 29.09.2026):** `POST /api/search/smart`
+    /// liefert `SearchResponseDto.assets.items` als nackte `AssetResponseDto`s —
+    /// ohne Score und ohne Distanz; der Server sortiert nach der Embedding-Distanz,
+    /// gibt sie aber nicht heraus. Unsinn wie „xqzv" ergibt deshalb die ganze
+    /// Mediathek als „Best Matches", und die App kann schwache Treffer nicht
+    /// erkennen, ohne zu raten.
     static func inReihenfolge(assets: [Asset], titel: String) -> [PhotoFeedDay] {
         let sichtbar = assets.filter {
             !$0.isArchived && !$0.isTrashed && !$0.istVersteckterBewegtbildAnteil
@@ -156,9 +163,18 @@ enum PhotoFeedGrouping {
               let jahr = Int(teile[0]), let monat = Int(teile[1]), let tag = Int(teile[2])
         else { return schluessel }
 
-        return formatiere(jahr: jahr, monat: monat, tag: tag, vorlage: "EEEEdMMMMy", sprache: sprache)
+        let cacheSchluessel = "\(sprache.identifier)|\(schluessel)"
+        if let fertig = zwischenspeicher.titel(cacheSchluessel) { return fertig }
+        let titel = formatiere(jahr: jahr, monat: monat, tag: tag, vorlage: "EEEEdMMMMy", sprache: sprache)
             ?? schluessel
+        zwischenspeicher.merkeTitel(titel, fuer: cacheSchluessel)
+        return titel
     }
+
+    /// Formatierer und fertige Tagestitel. Gemessen: 25 ms je Gruppierung schon bei
+    /// 133 Fotos, fast alles im Anlegen eines `DateFormatter` je Tag — und der Feed
+    /// gruppiert bei jeder Seite alles neu.
+    private static let zwischenspeicher = FormatZwischenspeicher()
 
     /// Formatiert ein Kalenderdatum aus drei Zahlen in der Reihenfolge und den
     /// Namen der Sprache (`vorlage` ist eine `DateFormatter`-Schablone).
@@ -179,11 +195,39 @@ enum PhotoFeedGrouping {
         let zurueck = kalender.dateComponents([.year, .month, .day], from: datum)
         guard zurueck.year == jahr, zurueck.month == monat, zurueck.day == tag else { return nil }
 
-        let formatierer = DateFormatter()
-        formatierer.calendar = kalender
-        formatierer.timeZone = .gmt
-        formatierer.locale = sprache
-        formatierer.setLocalizedDateFormatFromTemplate(vorlage)
-        return formatierer.string(from: datum)
+        return zwischenspeicher.formatierer(vorlage: vorlage, sprache: sprache, kalender: kalender)
+            .string(from: datum)
+    }
+}
+
+/// Threadsicherer Zwischenspeicher für ``PhotoFeedGrouping`` — die Gruppierung
+/// läuft abseits des Hauptthreads. `DateFormatter.string(from:)` ist seit iOS 7
+/// threadsicher; geschützt werden nur die Wörterbücher.
+final class FormatZwischenspeicher: @unchecked Sendable {
+    private let lock = NSLock()
+    private var formatierer: [String: DateFormatter] = [:]
+    private var titel: [String: String] = [:]
+
+    func formatierer(vorlage: String, sprache: Locale, kalender: Calendar) -> DateFormatter {
+        let schluessel = "\(sprache.identifier)|\(vorlage)"
+        lock.lock(); defer { lock.unlock() }
+        if let vorhanden = formatierer[schluessel] { return vorhanden }
+        let neu = DateFormatter()
+        neu.calendar = kalender
+        neu.timeZone = .gmt
+        neu.locale = sprache
+        neu.setLocalizedDateFormatFromTemplate(vorlage)
+        formatierer[schluessel] = neu
+        return neu
+    }
+
+    func titel(_ schluessel: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return titel[schluessel]
+    }
+
+    func merkeTitel(_ wert: String, fuer schluessel: String) {
+        lock.lock(); defer { lock.unlock() }
+        titel[schluessel] = wert
     }
 }

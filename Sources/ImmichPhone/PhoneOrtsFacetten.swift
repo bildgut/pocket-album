@@ -256,7 +256,7 @@ final class PhoneOrtsFacetten {
     }
 
     /// Zählabfragen mit höchstens ``PhoneOrtsKatalogAufbau/parallel`` gleichzeitig.
-    /// `nil`, sobald eine scheitert.
+    /// `nil` nur, wenn keine einzige gelingt; einzelne Fehlschläge fallen heraus.
     nonisolated private static func parallelZaehlen<Schluessel: Hashable & Sendable>(
         _ schluessel: [Schluessel],
         filter: @escaping @Sendable (Schluessel) -> SearchFilter,
@@ -281,7 +281,9 @@ final class PhoneOrtsFacetten {
             for await (fertig, anzahl) in gruppe {
                 if let anzahl { ergebnis[fertig] = anzahl } else { gescheitert = true }
             }
-            return gescheitert ? nil : ergebnis
+            // Nur `nil`, wenn **nichts** gezählt wurde: Eine einzelne gescheiterte
+            // Zählung ließ früher die ganze Reihe verschwinden.
+            return gescheitert && ergebnis.isEmpty ? nil : ergebnis
         }
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// Eine Kachel im Fotos-Reiter: der Eintrag selbst plus seine Position in der
 /// **flachen** Liste über alle Tagesabschnitte hinweg.
@@ -67,6 +68,40 @@ final class PhonePhotoFeed {
     /// Alle bisher geladenen, sichtbaren Einträge in Serverreihenfolge
     /// (absteigend). Genau die Liste, die `PhoneAssetView` als `eintraege`
     /// bekommt — der `flachIndex` einer Kachel indiziert hier hinein.
+    /// Beobachtet ``PhoneFavoritMeldung`` — Sternänderungen aus **jedem**
+    /// Einzelbild, nicht nur aus dem eigenen Raster. Vorher erreichte der
+    /// Rückruf des Einzelbilds nur den Feed, aus dem es geöffnet war: Ein Stern
+    /// in den Favoriten fehlte im Fotos-Reiter und umgekehrt.
+    @ObservationIgnored nonisolated(unsafe) private var favoritBeobachter: NSObjectProtocol?
+
+    init() {
+        favoritBeobachter = NotificationCenter.default.addObserver(
+            forName: PhoneFavoritMeldung.name, object: nil, queue: .main
+        ) { [weak self] meldung in
+            guard let (id, ist) = PhoneFavoritMeldung.lies(meldung) else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { await self.wendeFavoritAn(assetId: id, ist: ist) }
+            }
+        }
+    }
+
+    deinit {
+        if let favoritBeobachter { NotificationCenter.default.removeObserver(favoritBeobachter) }
+    }
+
+    /// Nur für Tests: läuft in ``neuGruppieren(meinLauf:)`` nach der Rechnung und
+    /// **vor** der Übernahme — so lässt sich das Rennen zweier Gruppierungen
+    /// ohne Zeitglück nachstellen.
+    @ObservationIgnored var vorUebernahmeHaken: (@MainActor () async -> Void)?
+
+    /// Zählt jede Gruppierung. `generation` allein genügt nicht: `entferne` und
+    /// `ladeWeitere` gruppieren **innerhalb** derselben Generation, und kam die
+    /// ältere Rechnung (noch mit dem gelöschten Foto) zuletzt an, stand das Foto
+    /// wieder da. Übernommen wird nur das Ergebnis der jüngsten Gruppierung — sie
+    /// rechnet über den neuesten Stand von `assets`, enthält also alles Spätere.
+    @ObservationIgnored private var gruppierNummer: UInt64 = 0
+
     private(set) var eintraege: [PhoneAlbumGridEintrag] = []
 
     /// Dasselbe, nach Tagen gruppiert — was das Raster zeichnet.
@@ -308,6 +343,9 @@ final class PhonePhotoFeed {
         guard !laedt, hatMehr else { return }
         let meineGeneration = generation
         laedt = true
+        let signpostID = OSSignpostID(log: AppLogger.dataPerf)
+        os_signpost(.begin, log: AppLogger.dataPerf, name: "PhoneFeedLadeWeitere", signpostID: signpostID)
+        defer { os_signpost(.end, log: AppLogger.dataPerf, name: "PhoneFeedLadeWeitere", signpostID: signpostID) }
         fehler = nil
         // Nur der *aktuelle* Lauf gibt die Sperre wieder frei. Täte das auch ein
         // überholter, hübe er sie mitten im Nachfolgelauf auf, und ein dritter
@@ -493,6 +531,12 @@ final class PhonePhotoFeed {
         // Ortszeit schwerer geworden: Eine spätere Seite kann einen Tag
         // tragen, der **über** bereits gezeichnete Abschnitte gehört, also
         // genügt Anhängen nicht, es bräuchte ein Einsortieren.
+        gruppierNummer &+= 1
+        let meineNummer = gruppierNummer
+        let signpostID = OSSignpostID(log: AppLogger.dataPerf)
+        os_signpost(.begin, log: AppLogger.dataPerf, name: "PhoneFeedGruppieren", signpostID: signpostID,
+                    "%d Assets", assets.count)
+        defer { os_signpost(.end, log: AppLogger.dataPerf, name: "PhoneFeedGruppieren", signpostID: signpostID) }
         let momentaufnahme = assets
         let sterne = favoritenAenderungen
         let bildsuche = !auswahl.freitext.isEmpty
@@ -529,7 +573,8 @@ final class PhonePhotoFeed {
         // (Serverwechsel, Aktualisieren-Zug). Dann gehört dieses Ergebnis zu
         // einem Stand, den es nicht mehr gibt — dieselbe Wache wie nach dem
         // Netzabruf oben.
-        guard meinLauf == generation else { return }
+        if let vorUebernahmeHaken { await vorUebernahmeHaken() }
+        guard meinLauf == generation, meineNummer == gruppierNummer else { return }
         eintraege = ergebnis.eintraege
         abschnitte = ergebnis.abschnitte
     }
@@ -562,6 +607,19 @@ final class PhonePhotoFeed {
     /// weder die Reihenfolge noch ein `flachIndex`, nur ein Feld einer
     /// einzelnen Kachel. Über die ganze Mediathek neu zu bauen (bei rund
     /// 165 000 Assets) wäre für ein Bit maßlos.
+    /// Wendet eine Sternänderung an — der Weg der app-weiten
+    /// ``PhoneFavoritMeldung``. Ein Feed, der **nur Favoriten** zeigt, nimmt die
+    /// Kachel beim Entfernen des Sterns heraus (sonst blieb sie stehen); beim
+    /// Setzen fügt er nichts hinzu — das Foto kommt beim nächsten Laden, denn
+    /// ob es überhaupt zur Auswahl passt (Ort, Person, Zeitraum), weiß nur der Server.
+    func wendeFavoritAn(assetId: String, ist: Bool) async {
+        if auswahl.nurFavoriten && !ist {
+            await entferne(assetId: assetId)
+        } else {
+            setzeFavorit(assetId: assetId, ist: ist)
+        }
+    }
+
     func setzeFavorit(assetId: String, ist: Bool) {
         favoritenAenderungen[assetId] = ist
         if let index = eintraege.firstIndex(where: { $0.id == assetId }) {
@@ -577,5 +635,23 @@ final class PhonePhotoFeed {
             )
             return
         }
+    }
+}
+
+/// Die app-weite Meldung „Stern geändert". Jedes Einzelbild schickt sie, jeder
+/// ``PhonePhotoFeed`` hört zu — Fotos, Favoriten und Entdecken haben je einen
+/// eigenen Feed, und ein Rückruf erreichte nur den, aus dem das Bild kam.
+enum PhoneFavoritMeldung {
+    static let name = Notification.Name("PhoneFavoritGeaendert")
+
+    @MainActor
+    static func melde(assetId: String, ist: Bool, center: NotificationCenter = .default) {
+        center.post(name: name, object: nil, userInfo: ["assetId": assetId, "ist": ist])
+    }
+
+    static func lies(_ meldung: Notification) -> (String, Bool)? {
+        guard let id = meldung.userInfo?["assetId"] as? String,
+              let ist = meldung.userInfo?["ist"] as? Bool else { return nil }
+        return (id, ist)
     }
 }

@@ -50,7 +50,7 @@ struct OfflineFehlendeMitWahlTests {
         ctx.insert(asset("f", pfad: "2024-01/f.heic"))
         ctx.insert(asset("v", video: true, pfad: "2024-01/v.mov"))
         try ctx.save()
-        #expect(OfflineDownloadManager.fehlendeDateien(for: ["f", "v"], in: ctx, wahl: OfflineWahl()).isEmpty)
+        #expect(OfflineDownloadManager.fehlendeDateien(for: ["f", "v"], in: ctx, wahl: OfflineWahl(), dateiDa: { _ in true }).isEmpty)
     }
 
     @Test func kleinereFassungWirdFuerOriginalNachgeladen() throws {
@@ -64,7 +64,15 @@ struct OfflineFehlendeMitWahlTests {
         #expect(Set(posten.map(\.assetId)) == ["f", "v", "g"])
         #expect(posten.allSatisfy { $0.fassung == .original })
         // Mit Wahl „Vorschau“ reicht die vorhandene Vorschau.
-        #expect(OfflineDownloadManager.fehlendeDateien(for: ["g"], in: ctx, wahl: OfflineWahl()).isEmpty)
+        #expect(OfflineDownloadManager.fehlendeDateien(for: ["g"], in: ctx, wahl: OfflineWahl(), dateiDa: { _ in true }).isEmpty)
+    }
+
+    /// Geräte-Wiederherstellung: Pfad im Store, Datei nicht auf der Platte.
+    @Test func pfadOhneDateiZaehltAlsFehlend() throws {
+        let ctx = try context()
+        ctx.insert(asset("f", pfad: "2024-01/f-\(UUID().uuidString).heic")); try ctx.save()
+        let posten = OfflineDownloadManager.fehlendeDateien(for: ["f"], in: ctx, wahl: OfflineWahl())
+        #expect(posten.map(\.assetId) == ["f"])
     }
 
     @Test func geloeschteUndUnbekannteFallenWeg() throws {

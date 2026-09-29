@@ -61,8 +61,11 @@ enum PhoneOrtsTexts {
     }
 
     static func landUntertitel(_ land: PhoneOrtsLand, sprache: Locale = .current) -> String {
-        let fotos = trefferZahl(land.anzahl)
-        guard let wann = monatJahr(land.zuletzt, sprache: sprache) else { return fotos }
+        let wann = monatJahr(land.zuletzt, sprache: sprache)
+        // Ohne `asset.statistics` gibt es keine Zahl — dann nur der Monat.
+        guard let anzahl = land.anzahl else { return wann ?? "" }
+        let fotos = trefferZahl(anzahl)
+        guard let wann else { return fotos }
         return "\(fotos) · \(wann)"
     }
 
@@ -83,6 +86,10 @@ enum PhoneOrtsTexts {
     static func personenErmitteln(megabyte: Int) -> String {
         String(localized: "Find People (≈ \(megabyte) MB)")
     }
+
+    /// Unter „Orte“: Gezählt wird nur, was Ortsdaten hat — ein Album mit 23 Fotos
+    /// kann im Land 6 ergeben.
+    static let nurMitOrt = String(localized: "Only photos with location data")
 
     static func trefferZahl(_ anzahl: Int) -> String {
         String(localized: "\(anzahl) photos")

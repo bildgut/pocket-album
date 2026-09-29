@@ -63,6 +63,12 @@ enum ServerAdresse {
             schemata = ["https://", "http://"]; rest = Substring(text)
         }
         while rest.hasSuffix("/") { rest = rest.dropLast() }
+        // Wer die API-Adresse einfügt („…/api“), bekäme sonst /api/api/… und ein 404:
+        // Der Client hängt „api/…“ selbst an.
+        if rest.lowercased().hasSuffix("/api") {
+            rest = rest.dropLast(4)
+            while rest.hasSuffix("/") { rest = rest.dropLast() }
+        }
         guard !rest.isEmpty else { return [] }
         let adressen = schemata.map { $0 + rest }
         return adressen.compactMap { adresse in

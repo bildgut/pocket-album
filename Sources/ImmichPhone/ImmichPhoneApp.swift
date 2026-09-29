@@ -44,6 +44,8 @@ struct ImmichPhoneApp: App {
                 .tint(Marke.akzent)
                 .defaultAppStorage(AppEnvironment.defaults)
                 .environment(connectionManager)
+                .modifier(PhoneOfflineNachholer(connection: connectionManager,
+                                                container: PhoneModelContainer.shared))
         }
         .modelContainer(PhoneModelContainer.shared)
     }

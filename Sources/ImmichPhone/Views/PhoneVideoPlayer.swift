@@ -27,6 +27,17 @@ import UIKit
 /// Optionen hier ein zweites Mal von Hand zu bauen, wäre genau die Stelle,
 /// an der eine `x-api-key`-Kopfzeile an eine `file://`-URL geriete.
 ///
+/// **Offene Lücke: kein Weiterleitungsschutz.** Alle `URLSession`s der App laufen
+/// über `SichereWeiterleitung`, das eine Weiterleitung auf einen fremden Host samt
+/// `x-api-key` abbricht. `AVURLAsset` hat dafür keinen Haken: Die Kopfzeilen aus
+/// `AVURLAssetHTTPHeaderFieldsKey` gehen bei einer Weiterleitung mit. Absichern
+/// ließe sich das nur über einen `AVAssetResourceLoaderDelegate` mit eigenem
+/// Schema, der jede Byte-Range selbst per `URLSession` holt (Content-Info,
+/// Range-Anfragen, Abbruch, HLS-Wiedergabelisten) — geprüft am 29.09.2026 und
+/// als zu schwer verworfen. Das Risiko setzt einen Server voraus, der
+/// `/api/assets/…/video/playback` auf einen fremden Host umleitet; derselbe Server
+/// sieht den Schlüssel ohnehin.
+///
 /// ---
 ///
 /// **Hängt ein Zweitbildschirm, läuft das Bild dort — und zwar über unsere

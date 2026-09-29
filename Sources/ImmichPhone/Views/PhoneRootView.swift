@@ -168,6 +168,8 @@ struct PhoneRootView: View {
         // Testhost eine echte Netzwerkverbindung.
         .task {
             OnboardingStatus.merkeBestandsnutzer(istKonfiguriert: connection.isConfigured)
+            // Mit Cache sofort den Inhalt zeigen, statt bis zur Frist auf „Verbinde…“.
+            connection.sofortOfflineBeimKaltstart = true
             if !AppEnvironment.isRunningTests,
                connection.isConfigured, !connection.state.isConnected {
                 await connection.reconnect()
@@ -341,6 +343,8 @@ private struct PhoneUnreachableView: View {
             // `false` — die Weiche in `PhoneRootView` zeigt danach von selbst
             // wieder das Onboarding (`OnboardingAblauf`), ohne dass diese Ansicht die Navigation
             // dorthin selbst bauen muss.
+            // Ein Kontowechsel danach wird beim nächsten `connect` erkannt
+            // (`KontoWechsel`: Kennung, sonst Server + Key-Fingerabdruck).
             Button("Change Credentials", role: .destructive) {
                 connection.disconnect()
                 photoFeed.leere()

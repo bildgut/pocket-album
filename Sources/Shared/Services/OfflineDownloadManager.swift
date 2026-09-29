@@ -29,6 +29,12 @@ final class OfflineSyncProgress {
     /// und das Album nicht über Mobilfunk laden darf. **Nicht** Teil von `reset()`:
     /// Der Zustand muss den Lauf überdauern, sonst sähe die Ansicht ihn nie.
     var wartetAufWLAN: Set<String> = []
+    /// Vermerke, die der Nutzer freigegeben hat, während ein Lauf sie womöglich
+    /// noch in der Arbeitsliste trägt. Auf dem MainActor gesetzt — in derselben
+    /// Bewegung wie das Entfernen der WLAN-Marke —, damit ein nachzügelnder
+    /// `vermerkeWartend(…, true)` des Laufs die Marke nicht wieder setzt.
+    /// Ein erneutes Pinnen nimmt den Eintrag heraus.
+    var freigegeben: Set<String> = []
 
     var progress: Double {
         guard total > 0 else { return 0 }
@@ -37,11 +43,11 @@ final class OfflineSyncProgress {
 
     var labelText: String {
         guard isActive else { return "" }
-        if isCancelling { return "Wird abgebrochen…" }
-        guard total > 0 else { return "Vorbereitung…" }
-        var text = "\(completed)/\(total) Dateien"
+        if isCancelling { return String(localized: "Cancelling…") }
+        guard total > 0 else { return String(localized: "Preparing…") }
+        var text = String(localized: "\(completed)/\(total) files")
         if !currentPinName.isEmpty { text += " · \(currentPinName)" }
-        if failed > 0 { text += " · \(failed) fehlgeschlagen" }
+        if failed > 0 { text += " · " + String(localized: "\(failed) failed") }
         return text
     }
 
@@ -50,6 +56,17 @@ final class OfflineSyncProgress {
         guard isActive, !isCancelling else { return }
         isCancelling = true
         Task { await OfflineDownloadManager.shared.cancel() }
+    }
+
+    /// Der Nutzer hat den Vermerk aufgehoben: WLAN-Marke weg und gesperrt, bis er
+    /// wieder gepinnt wird.
+    func markiereFreigegeben(_ pinId: String) {
+        freigegeben.insert(pinId)
+        wartetAufWLAN.remove(pinId)
+    }
+
+    func markiereGepinnt(_ pinId: String) {
+        freigegeben.remove(pinId)
     }
 
     fileprivate func reset() {
@@ -147,6 +164,38 @@ actor OfflineDownloadManager {
     private var isSyncing: Bool = false
     private var cancelRequested: Bool = false
 
+    /// Ein Auftrag, der während eines laufenden Durchgangs kam. Wird nicht
+    /// verworfen, sondern am Laufende nachgeschoben — auf dem Telefon starten nur
+    /// Pinnen und der Knopf im Albumdetail Läufe, ein verworfener Auftrag käme
+    /// dort nie wieder.
+    private struct Auftrag {
+        var container: ModelContainer
+        var apiClient: ImmichAPIClient
+        var respectMetered: Bool
+        var force: Bool
+        var mobilfunkFreigabe: Set<String>
+
+        mutating func vereinige(mit neu: Auftrag) {
+            container = neu.container
+            apiClient = neu.apiClient
+            respectMetered = respectMetered && neu.respectMetered
+            force = force || neu.force
+            mobilfunkFreigabe.formUnion(neu.mobilfunkFreigabe)
+        }
+    }
+    private var vorgemerkt: Auftrag?
+    /// Wer auf das Ende der ganzen Kette (inkl. nachgeschobener Läufe) wartet.
+    private var endeWartende: [CheckedContinuation<Void, Never>] = []
+    /// Während des Laufs freigegebene Vermerke (`pinId`) — vor jeder Datei geprüft.
+    private var verworfenePins: Set<String> = []
+
+    /// Container und Client für Läufe, die das Telefon selbst anstößt (Netzwechsel,
+    /// Vordergrund). Setzt nur ``nachholen(container:apiClient:)`` — der Mac nie.
+    private var nachholKontext: (container: ModelContainer, apiClient: ImmichAPIClient)?
+    /// `isMetered` ist bis zum ersten Pfad-Rückruf nur ein Vorgabewert (`false`).
+    private var pfadBekannt = false
+    private var nachholenNachPfad = false
+
     private var lastSyncDate: Date? {
         get { AppEnvironment.defaults.object(forKey: Self.lastSyncKey) as? Date }
         set { AppEnvironment.defaults.set(newValue, forKey: Self.lastSyncKey) }
@@ -172,7 +221,52 @@ actor OfflineDownloadManager {
     }
 
     func updateMeteredStatus(_ metered: Bool) {
+        let warTeuer = isMetered
+        let ersterRueckruf = !pfadBekannt
         self.isMetered = metered
+        pfadBekannt = true
+        // Wieder günstiges Netz (oder erstmals bekannt, nachdem ein Nachholen
+        // darauf wartete): Wartendes weiterladen.
+        if !metered && (warTeuer || (ersterRueckruf && nachholenNachPfad)) {
+            nachholenNachPfad = false
+            pruefeNachholen()
+        }
+    }
+
+    /// Einstieg für das Telefon: beim Start und bei jeder Rückkehr in den
+    /// Vordergrund. Merkt sich Container und Client für spätere Netzwechsel und
+    /// startet einen Lauf — erzwungen, wenn etwas unvollständig ist (wartet auf
+    /// WLAN, nie fertig geworden, nach der letzten Auflösung nicht fertig —
+    /// etwa weil die App mitten im Laden beendet wurde), sonst mit Cooldown.
+    /// Vor dem ersten Pfad-Rückruf wird nur vorgemerkt: `isMetered` wäre bis
+    /// dahin geraten.
+    func nachholen(container: ModelContainer, apiClient: ImmichAPIClient) {
+        nachholKontext = (container, apiClient)
+        guard pfadBekannt else {
+            nachholenNachPfad = true
+            return
+        }
+        pruefeNachholen()
+    }
+
+    private func pruefeNachholen() {
+        guard let kontext = nachholKontext else { return }
+        Task {
+            let wartet = await MainActor.run { !OfflineSyncProgress.shared.wartetAufWLAN.isEmpty }
+            let unvollstaendig = wartet || Self.hatUnvollstaendigeVermerke(in: ModelContext(kontext.container))
+            await self.syncOfflineAlbums(container: kontext.container, apiClient: kontext.apiClient,
+                                         force: unvollstaendig)
+        }
+    }
+
+    /// Ein Vermerk, dessen letzte Auflösung nach dem letzten vollständigen Lauf
+    /// liegt (oder der nie fertig wurde), hat noch Arbeit.
+    static func hatUnvollstaendigeVermerke(in context: ModelContext) -> Bool {
+        OfflinePinStore.allPins(in: context).contains { pin in
+            guard let fertig = pin.lastCompletedAt else { return true }
+            if let aufgeloest = pin.lastResolvedAt, aufgeloest > fertig { return true }
+            return false
+        }
     }
 
     /// Bricht den laufenden Durchgang ab. Wirkt wie `Task.isCancelled`, überlebt aber die
@@ -180,7 +274,33 @@ actor OfflineDownloadManager {
     func cancel() {
         guard isSyncing else { return }
         cancelRequested = true
+        vorgemerkt = nil
         AppLogger.cache.info("OfflineDownloadManager: Abbruch angefordert")
+    }
+
+    /// Läuft gerade ein Durchgang (oder ein nachgeschobener)?
+    var laeuft: Bool { isSyncing }
+
+    /// Kehrt zurück, sobald kein Lauf mehr läuft — auch kein nachgeschobener.
+    /// Sofort, wenn gerade nichts läuft.
+    func warteAufEnde() async {
+        guard isSyncing else { return }
+        await withCheckedContinuation { endeWartende.append($0) }
+    }
+
+    /// Bricht ab und wartet, bis der Lauf wirklich steht. Für alles, was danach
+    /// Store oder Offline-Ablage leert (Abmelden, Kontowechsel): Ein noch
+    /// laufender Download schriebe sonst in den geleerten Bestand.
+    func abbrechenUndWarten() async {
+        cancel()
+        await warteAufEnde()
+    }
+
+    /// Der Vermerk wurde aufgehoben: Der laufende Durchgang lädt für ihn keine
+    /// Datei mehr und schreibt nichts mehr an ihn.
+    func verwirf(pinId: String) {
+        guard isSyncing else { return }
+        verworfenePins.insert(pinId)
     }
 
     private var shouldStop: Bool {
@@ -201,8 +321,43 @@ actor OfflineDownloadManager {
         force: Bool = false,
         mobilfunkFreigabe: Set<String> = []
     ) async {
-        if isSyncing { return }
+        let auftrag = Auftrag(container: container, apiClient: apiClient, respectMetered: respectMetered,
+                              force: force, mobilfunkFreigabe: mobilfunkFreigabe)
+        if isSyncing {
+            // Vormerken statt verwerfen; Freigaben und `force` vereinigen sich.
+            if vorgemerkt == nil { vorgemerkt = auftrag } else { vorgemerkt?.vereinige(mit: auftrag) }
+            return
+        }
 
+        isSyncing = true
+        var naechster: Auftrag? = auftrag
+        while let jetzt = naechster {
+            cancelRequested = false
+            verworfenePins = []
+            await einLauf(container: jetzt.container, apiClient: jetzt.apiClient,
+                          respectMetered: jetzt.respectMetered, force: jetzt.force,
+                          mobilfunkFreigabe: jetzt.mobilfunkFreigabe)
+            // Direkt abwarten statt über ein losgelassenes `Task`: sonst träfe das
+            // Zurücksetzen womöglich erst im nachgeschobenen Lauf ein.
+            await updateProgress { $0.reset() }
+            naechster = vorgemerkt
+            vorgemerkt = nil
+        }
+        isSyncing = false
+        cancelRequested = false
+        verworfenePins = []
+        let wartende = endeWartende
+        endeWartende = []
+        for w in wartende { w.resume() }
+    }
+
+    private func einLauf(
+        container: ModelContainer,
+        apiClient: ImmichAPIClient,
+        respectMetered: Bool,
+        force: Bool,
+        mobilfunkFreigabe: Set<String>
+    ) async {
         if !force, let last = lastSyncDate,
            Date().timeIntervalSince(last) < Self.cooldownInterval {
             return
@@ -215,14 +370,6 @@ actor OfflineDownloadManager {
             return
         }
 
-        isSyncing = true
-        cancelRequested = false
-        defer {
-            isSyncing = false
-            cancelRequested = false
-            Task { await MainActor.run { OfflineSyncProgress.shared.reset() } }
-        }
-
         // `isActive` **hier**, nicht erst wenn die Dateiliste steht. Zwischen
         // diesen beiden Punkten löst der Lauf die Albumzugehörigkeit über die
         // API auf — bei einem Album mit vielen Assets sind das mehrere Sekunden
@@ -233,8 +380,9 @@ actor OfflineDownloadManager {
         //
         // `labelText` war für diese Phase schon vorbereitet: Bei `total == 0`
         // sagt es „Vorbereitung…". Diese Zeile ist also weniger eine Änderung
-        // als das Nachholen dessen, was die Anzeige immer schon annahm. Das
-        // `defer` oben setzt alles zurück, auch auf den frühen Rückwegen.
+        // als das Nachholen dessen, was die Anzeige immer schon annahm.
+        // `syncOfflineAlbums` setzt nach jedem Lauf alles zurück, auch nach den
+        // frühen Rückwegen.
         await updateProgress { p in
             p.isActive = true
             p.total = 0
@@ -266,11 +414,14 @@ actor OfflineDownloadManager {
             apiClient: apiClient
         )
 
+        var verschwunden = Set<String>()
         for pin in pins {
             guard !shouldStop else { break }
             switch pin.kind {
             case .album:
-                await resolveAlbumPin(pin, apiClient: apiClient, bgContext: bgContext)
+                if await resolveAlbumPin(pin, apiClient: apiClient, bgContext: bgContext) == .gibtEsNichtMehr {
+                    verschwunden.insert(pin.pinId)
+                }
             case .smartAlbum:
                 applySmartResolution(smartResolutions[pin.targetId], to: pin)
             }
@@ -281,7 +432,7 @@ actor OfflineDownloadManager {
         // Als einfache Werte, nicht als SwiftData-Objekte: nur so lassen sich die
         // Downloads gefahrlos parallelisieren.
         var work: [(pin: OfflinePin, items: [OfflineLadeposten], mobilfunk: Bool)] = []
-        for pin in pins {
+        for pin in pins where !verschwunden.contains(pin.pinId) {
             let wahl = wahlQuelle?(pin.pinId)
             let items: [OfflineLadeposten]
             if let wahl {
@@ -307,7 +458,7 @@ actor OfflineDownloadManager {
 
         let overallTotal = work.reduce(0) { $0 + $1.items.count }
         guard overallTotal > 0 else {
-            for pin in pins where pin.lastError == nil {
+            for pin in pins where pin.lastError == nil && !verworfenePins.contains(pin.pinId) {
                 pin.lastCompletedAt = Date()
             }
             try? bgContext.save()
@@ -326,8 +477,17 @@ actor OfflineDownloadManager {
         }
 
         // ── 3. Laden ──────────────────────────────────────────────────────────
+        var erreicht = 0
         for entry in work {
             guard !shouldStop else { break }
+            erreicht += 1
+            // Während des Laufs freigegeben? Dann weder laden noch an den
+            // (gelöschten) Vermerk schreiben.
+            guard !verworfenePins.contains(entry.pin.pinId),
+                  Self.pinExistiert(entry.pin.pinId, in: container) else {
+                verworfenePins.insert(entry.pin.pinId)
+                continue
+            }
             let netzPruefen = respectMetered && !entry.mobilfunk
                 && !mobilfunkFreigabe.contains(entry.pin.pinId)
             if netzPruefen && isMetered {
@@ -348,17 +508,27 @@ actor OfflineDownloadManager {
                 bgContext: bgContext,
                 // Vor **jeder** Datei nur mit Wahl-Quelle — der Mac prüft wie bisher
                 // nur zwischen Vermerken.
-                netzPruefen: netzPruefen && wahlQuelle != nil
+                netzPruefen: netzPruefen && wahlQuelle != nil,
+                pinId: entry.pin.pinId
             )
 
+            guard !verworfenePins.contains(entry.pin.pinId) else { continue }
             await vermerkeWartend(entry.pin.pinId, ergebnis.angehalten)
             if ergebnis.fehler > 0 {
-                entry.pin.lastError = "\(ergebnis.fehler) von \(entry.items.count) Dateien konnten nicht geladen werden."
+                entry.pin.lastError = Self.downloadFehlerText(fehler: ergebnis.fehler, von: entry.items.count)
+            } else if ergebnis.abgebrochen {
+                // Abbruch ist kein Fehler, aber auch nicht fertig.
             } else if !ergebnis.angehalten {
                 entry.pin.lastError = nil
                 entry.pin.lastCompletedAt = Date()
             }
             try? bgContext.save()
+        }
+
+        // Abgebrochen: Was nicht mehr erreicht wurde, wartet auch nicht mehr auf
+        // WLAN — es läuft ja nichts mehr, das weitermachen könnte.
+        for entry in work.dropFirst(erreicht) {
+            await vermerkeWartend(entry.pin.pinId, false)
         }
 
         await evictNoLongerPinned(container: container)
@@ -367,8 +537,11 @@ actor OfflineDownloadManager {
 
     // MARK: - Auflösung
 
+    enum AufloesungsErgebnis: Equatable { case ok, fehler, gibtEsNichtMehr }
+
     /// Holt die Mitgliedschaft eines echten Albums vom Server und legt neue Assets an.
-    private func resolveAlbumPin(_ pin: OfflinePin, apiClient: ImmichAPIClient, bgContext: ModelContext) async {
+    @discardableResult
+    private func resolveAlbumPin(_ pin: OfflinePin, apiClient: ImmichAPIClient, bgContext: ModelContext) async -> AufloesungsErgebnis {
         do {
             let detail = try await apiClient.getAlbumDetail(id: pin.targetId)
 
@@ -397,12 +570,51 @@ actor OfflineDownloadManager {
                 cachedAlbum.isMarkedForOffline = true
                 cachedAlbum.assetIds = pin.assetIds
             }
+            return .ok
         } catch {
             // Die zuletzt aufgelöste Liste bleibt stehen: Sie ist besser als keine, und
             // ohne sie flögen beim nächsten Aufräumen alle Dateien des Albums raus.
-            pin.lastError = "Album konnte nicht vom Server geladen werden: \(error.localizedDescription)"
+            //
+            // `getAlbumDetail` prüft keinen Statuscode — ein 404/400/403 kommt hier
+            // als Dekodierfehler an, genau wie ein kaputtes Netz. Unterschieden wird
+            // deshalb über die Albenlisten: Liefern **beide** ohne Fehler und das
+            // Album steht in keiner, gibt es es für dieses Konto nicht mehr. Scheitert
+            // eine Liste, bleibt es beim vorsichtigen „vorübergehend". Die Dateien
+            // bleiben liegen, bis der Nutzer freigibt (Einstellungen zeigen den Text).
+            if await Self.albumFehltAufServer(pin.targetId, apiClient: apiClient) {
+                pin.lastError = Self.albumWegText
+                AppLogger.cache.info("OfflineDownloadManager: '\(pin.displayName)' gibt es auf dem Server nicht mehr.")
+                return .gibtEsNichtMehr
+            }
+            pin.lastError = String(localized: "Couldn't load the album from the server: \(error.localizedDescription)")
             AppLogger.cache.error("OfflineDownloadManager: Auflösung von '\(pin.displayName)' fehlgeschlagen: \(error)")
+            return .fehler
         }
+    }
+
+    static var albumWegText: String {
+        String(localized: "This album no longer exists on the server, or you no longer have access. Remove it to free up space.")
+    }
+
+    static func downloadFehlerText(fehler: Int, von gesamt: Int) -> String {
+        String(localized: "\(fehler) of \(gesamt) files couldn't be downloaded.")
+    }
+
+    private static func albumFehltAufServer(_ albumId: String, apiClient: ImmichAPIClient) async -> Bool {
+        do {
+            let eigene = try await apiClient.getAlbums()
+            if eigene.contains(where: { $0.id == albumId }) { return false }
+            let geteilte = try await apiClient.getSharedAlbums()
+            return !geteilte.contains(where: { $0.id == albumId })
+        } catch {
+            return false
+        }
+    }
+
+    private static func pinExistiert(_ pinId: String, in container: ModelContainer) -> Bool {
+        var d = FetchDescriptor<OfflinePin>(predicate: #Predicate { $0.pinId == pinId })
+        d.fetchLimit = 1
+        return ((try? ModelContext(container).fetchCount(d)) ?? 0) > 0
     }
 
     private func applySmartResolution(_ resolution: SmartAlbumResolution?, to pin: OfflinePin) {
@@ -441,9 +653,14 @@ actor OfflineDownloadManager {
     /// Die Häppchengröße ist dieselbe wie im EXIF-Abgleich von `SyncEngine`.
     ///
     /// Reihenfolge wie im Vermerk, doppelte IDs einmal.
+    ///
+    /// Ein `localFilePath`, dessen Datei fehlt, zählt als fehlend: Nach einer
+    /// Geräte-Wiederherstellung kommt der Store mit, die Offline-Ablage
+    /// (vom Backup ausgenommen) nicht. `dateiDa` nur für Tests.
     static func fehlendeDateien(
         for assetIds: [String],
-        in context: ModelContext
+        in context: ModelContext,
+        dateiDa: (String) -> Bool = { LocalFileCacheManager.localFileURL(forPath: $0) != nil }
     ) -> [(assetId: String, monthKey: String)] {
         guard !assetIds.isEmpty else { return [] }
         var gesehen = Set<String>()
@@ -456,11 +673,14 @@ actor OfflineDownloadManager {
             start += 500
             let descriptor = FetchDescriptor<CachedAsset>(
                 predicate: #Predicate<CachedAsset> {
-                    ids.contains($0.assetId) && $0.localFilePath == nil && $0.isTrashed == false
+                    ids.contains($0.assetId) && $0.isTrashed == false
                 }
             )
             guard let treffer = try? context.fetch(descriptor) else { continue }
-            for asset in treffer { fehlend[asset.assetId] = asset.monthKey }
+            for asset in treffer {
+                if let pfad = asset.localFilePath, dateiDa(pfad) { continue }
+                fehlend[asset.assetId] = asset.monthKey
+            }
         }
         return eindeutig.compactMap { id in fehlend[id].map { (assetId: id, monthKey: $0) } }
     }
@@ -474,7 +694,8 @@ actor OfflineDownloadManager {
     static func fehlendeDateien(
         for assetIds: [String],
         in context: ModelContext,
-        wahl: OfflineWahl
+        wahl: OfflineWahl,
+        dateiDa: (String) -> Bool = { LocalFileCacheManager.localFileURL(forPath: $0) != nil }
     ) -> [OfflineLadeposten] {
         guard !assetIds.isEmpty else { return [] }
         let eindeutig = Array(Set(assetIds))
@@ -493,7 +714,8 @@ actor OfflineDownloadManager {
                 let istVideo = asset.type == AssetType.video.rawValue
                 guard let ziel = wahl.ziel(istVideo: istVideo) else { continue }
                 if let pfad = asset.localFilePath,
-                   wahl.reicht(OfflineFassung.aus(pfad: pfad), istVideo: istVideo) { continue }
+                   wahl.reicht(OfflineFassung.aus(pfad: pfad), istVideo: istVideo),
+                   dateiDa(pfad) { continue }
                 let posten = OfflineLadeposten(assetId: asset.assetId, monthKey: asset.monthKey, fassung: ziel)
                 if istVideo {
                     videos.append((asset.fileCreatedAt, posten))
@@ -514,16 +736,20 @@ actor OfflineDownloadManager {
         items: [OfflineLadeposten],
         apiClient: ImmichAPIClient,
         bgContext: ModelContext,
-        netzPruefen: Bool
-    ) async -> (fehler: Int, angehalten: Bool) {
+        netzPruefen: Bool,
+        pinId: String
+    ) async -> (fehler: Int, angehalten: Bool, abgebrochen: Bool) {
         var failures = 0
         var angehalten = false
+        var abgebrochen = false
         var pending: [(assetId: String, path: String)] = []
         var index = 0
 
         await withTaskGroup(of: (String, String?).self) { group in
             func addNext() {
-                guard index < items.count, !shouldStop else { return }
+                guard index < items.count else { return }
+                let verworfen = verworfenePins.contains(pinId)
+                if shouldStop || verworfen { abgebrochen = true; return }
                 // `isMetered` kann sich zwischen zwei Dateien ändern: Die Gruppe wartet
                 // bei `for await`, dabei läuft `updateMeteredStatus` auf diesem Actor.
                 if netzPruefen, isMetered { angehalten = true; return }
@@ -569,7 +795,7 @@ actor OfflineDownloadManager {
         }
 
         persist(pending, in: bgContext)
-        return (failures, angehalten)
+        return (failures, angehalten, abgebrochen)
     }
 
     private func persist(_ results: [(assetId: String, path: String)], in bgContext: ModelContext) {
@@ -578,7 +804,14 @@ actor OfflineDownloadManager {
             let assetId = result.assetId
             var descriptor = FetchDescriptor<CachedAsset>(predicate: #Predicate { $0.assetId == assetId })
             descriptor.fetchLimit = 1
-            guard let asset = try? bgContext.fetch(descriptor).first else { continue }
+            guard let asset = try? bgContext.fetch(descriptor).first else {
+                // Asset weg (Abmelden/Kontowechsel leerte den Store mitten im
+                // Laden) — die frische Datei hält sonst niemand mehr.
+                if let url = LocalFileCacheManager.localFileURL(forPath: result.path) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                continue
+            }
             // Zwei Vermerke mit verschiedener Wahl teilen sich ein Asset, und beide
             // Arbeitslisten entstanden, bevor etwas geladen war: Ein Original wird
             // nie gegen eine kleinere Fassung getauscht — die neue Datei geht.
@@ -617,8 +850,17 @@ actor OfflineDownloadManager {
     // MARK: - Fortschritt
 
     private func vermerkeWartend(_ pinId: String, _ wartet: Bool) async {
+        if wartet && verworfenePins.contains(pinId) { return }
         await updateProgress { p in
-            if wartet { p.wartetAufWLAN.insert(pinId) } else { p.wartetAufWLAN.remove(pinId) }
+            if wartet {
+                // Freigegeben, während der Lauf das Album noch trug: Marke nicht
+                // wieder setzen (die Prüfung hier ist auf dem MainActor und damit
+                // geordnet mit `markiereFreigegeben`).
+                guard !p.freigegeben.contains(pinId) else { return }
+                p.wartetAufWLAN.insert(pinId)
+            } else {
+                p.wartetAufWLAN.remove(pinId)
+            }
         }
     }
 

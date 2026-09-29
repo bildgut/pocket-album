@@ -46,6 +46,8 @@ enum OnboardingTexts {
     static let rechtAendern = String(localized: "Favorite & delete")
     static let keyAbgelehnt = String(localized: "The server doesn’t accept this API key.")
     static let keyOhneAlben = String(localized: "This key is missing the permission album.read.")
+    static let keyProxyAnmeldung = String(localized: "The server redirects to a login page — proxy logins aren’t supported.")
+    static let keyServerFehler = String(localized: "The server responded with an error. Please try again later.")
     static let wieKey = String(localized: "How do I get a key?")
     static let stattdessenAnmelden = String(localized: "Or sign in to create one automatically")
 

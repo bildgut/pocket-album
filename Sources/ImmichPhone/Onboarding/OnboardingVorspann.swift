@@ -42,8 +42,13 @@ struct OnboardingVorspann: View {
                 }
                 .padding(.bottom, 12)
             }
+            // Auf der letzten Seite macht der Hauptknopf dasselbe — „Skip“ wäre doppelt.
             Button(OnboardingTexts.ueberspringen, action: fertig)
                 .foregroundStyle(farben.nebentext).padding(20)
+                .opacity(seite < 2 ? 1 : 0)
+                .disabled(seite >= 2)
+                .accessibilityHidden(seite >= 2)
+                .animation(.snappy, value: seite)
         }
     }
 }

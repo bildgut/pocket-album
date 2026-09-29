@@ -40,6 +40,12 @@ final class ConnectionManager {
     /// Aufräumen bei einem Kontowechsel (siehe ``KontoWechsel``). Setzt nur der
     /// iOS-Client; `nil` heißt: nicht prüfen.
     var beiKontoWechsel: (@MainActor () async -> Void)?
+    /// Kaltstart mit gespeicherten Zugangsdaten und Cache: sofort `.offline` zeigen
+    /// und im Hintergrund verbinden, statt bis zur Frist auf „Verbinde…“ zu stehen.
+    /// Setzt nur der iOS-Client; der Mac verbindet wie bisher sichtbar.
+    var sofortOfflineBeimKaltstart = false
+    /// Basis aller Clients, die `connect` anlegt. Injizierbar für Tests.
+    var sitzungsKonfiguration: URLSessionConfiguration = .default
     private var networkMonitor: NWPathMonitor?
     private var monitorQueue = DispatchQueue(label: "com.immichmac.network")
     private var isNetworkAvailable = true
@@ -79,7 +85,19 @@ final class ConnectionManager {
     // MARK: - Connect
 
     func connect(serverURL: String, apiKey: String, email: String? = nil, password: String? = nil, isAutoReconnect: Bool = false) async {
-        state = .connecting
+        // Sichtbar „Verbinde…“ nur beim manuellen Verbinden und beim Kaltstart ohne
+        // Inhalt. Ein automatisches Wiederverbinden aus `.offline`/`.connected` lässt
+        // den Zustand stehen, bis Erfolg oder Fehler feststeht — sonst risse die
+        // Wurzelansicht alle NavigationStacks und Player ab (`canBrowse` kurz falsch).
+        if !isAutoReconnect {
+            state = .connecting
+        } else if !state.canBrowse {
+            if sofortOfflineBeimKaltstart, hasCachedData() {
+                goOfflineIfCached()
+            } else {
+                state = .connecting
+            }
+        }
         AppLogger.connection.debug("Connecting to: \(serverURL)")
 
         // Normalize URL
@@ -96,20 +114,35 @@ final class ConnectionManager {
             return
         }
 
-        let client = ImmichAPIClient(baseURL: url, apiKey: apiKey)
+        let client = ImmichAPIClient(baseURL: url, apiKey: apiKey, sessionConfiguration: sitzungsKonfiguration)
+        // Eigener Client mit kurzer Frist nur für die Erreichbarkeit: Ohne VPN kommt
+        // kein Sofortfehler, sondern Schweigen bis zur Frist.
+        let pruefer = ImmichAPIClient(baseURL: url, apiKey: apiKey, sessionConfiguration: sitzungsKonfiguration,
+                                      anfrageFrist: ImmichAPIClient.kurzeFrist)
 
         do {
-            let pong = try await pingWithRetry(client: client)
+            let pong: Bool
+            do {
+                pong = try await pingWithRetry(client: pruefer)
+            } catch is DecodingError {
+                // 200 mit HTML (Proxy-Startseite, falscher Dienst): kein Immich.
+                throw APIError.keinImmich
+            }
             AppLogger.connection.info("Ping result: \(pong)")
             guard pong else {
-                if isAutoReconnect { goOfflineIfCached() }
+                if isAutoReconnect { bleibOfflineOderGehOffline() }
                 else { state = .error("Server did not respond to ping") }
                 return
             }
 
-            let version = try await client.getServerVersion()
+            let version: String
+            do {
+                version = try await pruefer.getServerVersion()
+            } catch is DecodingError {
+                throw APIError.keinImmich
+            }
             // Vor dem Speichern: Ping und Version gehen auch ohne gültigen Schlüssel.
-            try await client.pruefeSchluessel()
+            try await pruefer.pruefeSchluessel()
 
             // Rechte des Keys: gelernte Sperren dieses Keys laden, dann die frische
             // Meldung darüberlegen. Scheitert die Meldung (älterer Server), bleibt es
@@ -125,13 +158,19 @@ final class ConnectionManager {
             // Nur wenn jemand aufräumen will (iOS) — der Mac spart sich die Anfrage.
             if let beiKontoWechsel {
                 let konto = await client.kontoKennung()
-                let bisher = KontoWechsel.bisher(AppEnvironment.defaults)
-                if KontoWechsel.istWechsel(bisher: bisher, neu: konto) {
+                let defaults = AppEnvironment.defaults
+                let zugang = KontoWechsel.zugang(serverURL: urlString, apiKey: apiKey)
+                if KontoWechsel.istWechsel(bisher: KontoWechsel.bisher(defaults), neu: konto,
+                                           bisherZugang: KontoWechsel.bisherZugang(defaults), neuZugang: zugang) {
                     AppLogger.connection.info("Anderes Konto angemeldet — lokale Daten des vorigen werden geleert")
                     await beiKontoWechsel()
                     NotificationCenter.default.post(name: .kontoGewechselt, object: nil)
+                    // Unbekanntes neues Konto: die alte Kennung gehört nicht mehr zu
+                    // diesen Daten — sonst meldete der nächste Start erneut „Wechsel“.
+                    if konto == nil { defaults.removeObject(forKey: KontoWechsel.schluessel) }
                 }
-                KontoWechsel.merke(konto, in: AppEnvironment.defaults)
+                KontoWechsel.merke(konto, in: defaults)
+                KontoWechsel.merkeZugang(zugang, in: defaults)
             }
 
             // Save credentials and update observable state
@@ -224,13 +263,23 @@ final class ConnectionManager {
             AppLogger.connection.error("Connection error: \(error)")
             if isAutoReconnect {
                 // Kaltstart ohne Netz: wenn bereits Daten lokal vorhanden → Offline-Modus
-                goOfflineIfCached()
+                bleibOfflineOderGehOffline()
+            } else if let apiFehler = error as? APIError, let text = apiFehler.errorDescription {
+                state = .error(text)
             } else {
                 let nsErr = error as NSError
                 AppLogger.connection.error("Connection error: domain=\(nsErr.domain) code=\(nsErr.code) msg=\(nsErr.localizedDescription)")
                 state = .error("Connection failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Automatisches Wiederverbinden gescheitert: Ist die App schon offline, bleibt
+    /// alles, wie es ist (kein neuer Client, keine neue Pipeline — die Ansichten
+    /// hängen daran). Sonst in den Offline-Modus, falls es Daten gibt.
+    private func bleibOfflineOderGehOffline() {
+        if state.isOffline { return }
+        goOfflineIfCached()
     }
 
     /// Wechselt in den Offline-Modus wenn ein initialer Sync bereits abgeschlossen wurde.
@@ -247,8 +296,11 @@ final class ConnectionManager {
         // Prüfe ob je ein initialer Sync stattgefunden hat
         let hasCache = hasCachedData()
         guard hasCache else {
-            // Noch nie verbunden gewesen — Login-Screen zeigen
+            // Noch nie verbunden gewesen — Login-Screen zeigen. Den Netzmonitor
+            // trotzdem starten: Kommt das Netz zurück, verbindet er selbst neu,
+            // statt dass der Nutzer „Erneut versuchen“ finden muss.
             state = .disconnected
+            startNetworkMonitoring()
             return
         }
 
@@ -445,7 +497,15 @@ final class ConnectionManager {
         // At ~100KB per 150px thumbnail, this holds ~5000 decoded images,
         // enough for smooth scrolling through several screens without eviction.
         let imageCache = ImageCache()
+        #if os(iOS)
+        // iOS: 460 MB Footprint schon bei 133 Assets gemessen — die Einzelbild-
+        // Vorschauen (1440 px, dekodiert ~8–11 MB je Stück) landen im selben
+        // Speicher-Cache. 160 MB halten weiter mehrere Bildschirme Thumbnails;
+        // Nukes Eintragsgrenze (10 % davon) lässt einzelne Riesenbilder draußen.
+        imageCache.costLimit = 160 * 1024 * 1024
+        #else
         imageCache.costLimit = 500 * 1024 * 1024
+        #endif
         config.imageCache = imageCache
 
         // Disk cache: single cache for both thumbnails and full-size images
@@ -466,6 +526,12 @@ final class ConnectionManager {
     var thumbnailCacheUsageString: String {
         guard let cache = thumbnailCache else { return "N/A" }
         return ByteCountFormatter.string(fromByteCount: Int64(cache.totalSize), countStyle: .file)
+    }
+
+    /// Beide Nuke-Caches, festgehalten vor `disconnect()` (das sie auf `nil` setzt),
+    /// damit ``AccountDataPurge`` sie nach dem Abmelden noch räumen kann.
+    var bildCaches: (pipeline: ImagePipeline?, platte: DataCache?) {
+        (imagePipeline, thumbnailCache)
     }
 
     func clearThumbnailCache() {

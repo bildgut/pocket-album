@@ -56,7 +56,16 @@ struct PhoneAssetView: View {
     @Environment(ConnectionManager.self) private var connection
     @Environment(\.modelContext) private var modelContext
 
-    @State private var currentIndex: Int
+    /// Die **Asset-ID** der sichtbaren Seite, nicht ihre Position. Die Feeds
+    /// sortieren beim Nachladen global neu (``PhotoFeedGrouping``): Ein Tag einer
+    /// späteren Seite kann **vor** bereits gezeigten landen, und derselbe Index
+    /// zeigte danach ein anderes Foto — Stern und Papierkorb trafen dann das
+    /// falsche. Die ID bleibt stehen, egal wie die Liste darunter umsortiert.
+    @State private var aktuelleId: String?
+    /// Die Seiten, die der `TabView` zeigt — ``PhoneEinzelbildSeiten/abgleich(alt:neu:aktuell:)``
+    /// hält sie mit `eintraege` gleich, ohne das gerade sichtbare Foto
+    /// herauszureißen.
+    @State private var seiten: [PhoneAlbumGridEintrag]
     /// Abweichungen vom Sternzustand, mit dem die Einträge hereinkamen —
     /// `eintraege` ist ein `let` und gehört der Elternansicht. Der wirksame
     /// Zustand steht in `istFavorit(_:)`.
@@ -82,14 +91,16 @@ struct PhoneAssetView: View {
         self.start = start
         self.onGeloescht = onGeloescht
         self.onFavoritGeaendert = onFavoritGeaendert
-        _currentIndex = State(initialValue: start)
+        _aktuelleId = State(initialValue: eintraege.indices.contains(start) ? eintraege[start].id : nil)
+        _seiten = State(initialValue: eintraege)
     }
 
     /// Der Eintrag, auf den sich die Leiste bezieht. `nil`, wenn die
     /// Elternansicht die Liste unter uns geleert hat — dann zeichnet die
     /// Leiste gar nicht erst.
     private var aktuellerEintrag: PhoneAlbumGridEintrag? {
-        eintraege.indices.contains(currentIndex) ? eintraege[currentIndex] : nil
+        guard let aktuelleId else { return nil }
+        return seiten.first { $0.id == aktuelleId }
     }
 
     private func istFavorit(_ eintrag: PhoneAlbumGridEintrag) -> Bool {
@@ -129,11 +140,14 @@ struct PhoneAssetView: View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
 
-            TabView(selection: $currentIndex) {
-                ForEach(Array(eintraege.enumerated()), id: \.offset) { index, eintrag in
-                    PhoneAssetPage(eintrag: eintrag, isCurrentPage: index == currentIndex)
-                        .tag(index)
+            TabView(selection: $aktuelleId) {
+                ForEach(seiten) { eintrag in
+                    PhoneAssetPage(eintrag: eintrag, isCurrentPage: eintrag.id == aktuelleId)
+                        .tag(Optional(eintrag.id))
                 }
+            }
+            .onChange(of: eintraege.map(\.id)) {
+                seiten = PhoneEinzelbildSeiten.abgleich(alt: seiten, neu: eintraege, aktuell: aktuelleId)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             // Befund aus der Prüfung von Task 6: `.simultaneousGesture` allein
@@ -414,6 +428,7 @@ struct PhoneAssetView: View {
         let neu = !istFavorit(eintrag)
         favoritenAenderungen[id] = neu
         onFavoritGeaendert(id, neu)
+        PhoneFavoritMeldung.melde(assetId: id, ist: neu)
         laufendeAktion = .favorit
         Task {
             defer { laufendeAktion = nil }
@@ -424,6 +439,7 @@ struct PhoneAssetView: View {
             } catch {
                 favoritenAenderungen[id] = !neu
                 onFavoritGeaendert(id, !neu)
+                PhoneFavoritMeldung.melde(assetId: id, ist: !neu)
                 AppLogger.library.error("Favorit \(id, privacy: .public) fehlgeschlagen: \(error.localizedDescription, privacy: .public)")
                 meldeFehler(error, recht: KeyRechte.favorit)
             }
@@ -895,5 +911,24 @@ private struct PhoneAssetPage: View {
             }
             return UIImage(cgImage: cgImage)
         }.value
+    }
+}
+
+/// Hält die Seiten des Einzelbilds mit der Liste der Elternansicht gleich.
+///
+/// Die Feeds laden weiter, während das Einzelbild offen ist; neue Fotos sollen
+/// zum Wischen da sein. Nur ein Fall bleibt beim alten Stand: Die neue Liste
+/// enthält das **gerade gezeigte** Foto nicht mehr (etwa der eben entfernte
+/// Stern in den Favoriten). Dann stünde der `TabView` ohne passende Seite da und
+/// spränge auf irgendein anderes Foto — also bleibt der bisherige Stand, bis
+/// der Nutzer weiterwischt.
+enum PhoneEinzelbildSeiten {
+    static func abgleich(
+        alt: [PhoneAlbumGridEintrag],
+        neu: [PhoneAlbumGridEintrag],
+        aktuell: String?
+    ) -> [PhoneAlbumGridEintrag] {
+        guard let aktuell, !neu.contains(where: { $0.id == aktuell }) else { return neu }
+        return alt
     }
 }

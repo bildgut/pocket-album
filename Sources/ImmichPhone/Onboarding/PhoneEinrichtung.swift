@@ -75,27 +75,58 @@ final class PhoneEinrichtung {
         guard !kandidaten.isEmpty else { server = .leer; return }
         server = .prueft
 
-        var ergebnis: ServerStand = .nichtErreichbar
-        var loginErlaubt = true
-        for url in kandidaten {
-            let client = ImmichAPIClient(baseURL: url, apiKey: "", sessionConfiguration: konfiguration)
-            do {
-                guard try await client.ping(),
-                      let version = ImmichVersion(try await client.getServerVersion())
-                else { ergebnis = .keinImmich; continue }
-                if version < .mindestens { ergebnis = .zuAlt(version); break }
-                loginErlaubt = (try? await client.passwortLoginErlaubt()) ?? true
-                ergebnis = .gefunden(url, version)
-                break
-            } catch is DecodingError {
-                ergebnis = .keinImmich
-            } catch {
-                // Netzfehler: nächsten Kandidaten versuchen.
+        // https und http **gleichzeitig**, jeweils mit kurzer Frist: Nacheinander mit
+        // 30 s je Versuch stand ein Server hinter ausgeschaltetem VPN bis zu einer
+        // Minute auf „prüft“. Gewählt wird trotzdem in der Reihenfolge der Kandidaten.
+        // Nur gelesen (URLSession kopiert sie), daher unbedenklich über die Grenze.
+        nonisolated(unsafe) let konfiguration = self.konfiguration
+        let einzeln = await withTaskGroup(of: (Int, ServerStand, Bool).self) { gruppe in
+            for (i, url) in kandidaten.enumerated() {
+                gruppe.addTask {
+                    let (stand, login) = await Self.pruefe(url: url, konfiguration: konfiguration)
+                    return (i, stand, login)
+                }
             }
+            var alle: [(Int, ServerStand, Bool)] = []
+            for await e in gruppe { alle.append(e) }
+            return alle.sorted { $0.0 < $1.0 }
         }
+        let (ergebnis, loginErlaubt) = Self.waehle(einzeln.map { ($0.1, $0.2) })
         guard lauf == serverLauf else { return }
         server = ergebnis
         passwortLoginErlaubt = loginErlaubt
+    }
+
+    /// Der erste Kandidat mit Befund (gefunden/zu alt) gewinnt; sonst „kein Immich“,
+    /// wenn irgendwo etwas Fremdes antwortete, sonst „nicht erreichbar“.
+    nonisolated static func waehle(_ einzeln: [(ServerStand, Bool)]) -> (ServerStand, Bool) {
+        for (stand, login) in einzeln {
+            switch stand {
+            case .gefunden, .zuAlt: return (stand, login)
+            default: continue
+            }
+        }
+        if einzeln.contains(where: { $0.0 == .keinImmich }) { return (.keinImmich, true) }
+        return (.nichtErreichbar, true)
+    }
+
+    /// Eine Adresse. 5xx (Proxy ohne laufenden Immich dahinter) ist „nicht
+    /// erreichbar“, nicht „kein Immich“.
+    nonisolated private static func pruefe(url: URL, konfiguration: URLSessionConfiguration) async -> (ServerStand, Bool) {
+        let client = ImmichAPIClient(baseURL: url, apiKey: "", sessionConfiguration: konfiguration,
+                                     anfrageFrist: ImmichAPIClient.kurzeFrist)
+        do {
+            guard try await client.ping(),
+                  let version = ImmichVersion(try await client.getServerVersion())
+            else { return (.keinImmich, true) }
+            if version < .mindestens { return (.zuAlt(version), true) }
+            let login = (try? await client.passwortLoginErlaubt()) ?? true
+            return (.gefunden(url, version), login)
+        } catch is DecodingError {
+            return (.keinImmich, true)
+        } catch {
+            return (.nichtErreichbar, true)
+        }
     }
 
     // MARK: - Key
@@ -111,7 +142,7 @@ final class PhoneEinrichtung {
     enum Umfang: CaseIterable {
         case nurAnsehen, voll
         var rechte: [String] {
-            let lesen = ["album.read", "asset.read", "asset.view", "asset.download", "asset.statistics", "person.read"]
+            let lesen = ["album.read", "asset.read", "asset.view", "asset.download", "asset.statistics", "person.read", "user.read"]
             return self == .voll ? lesen + [KeyRechte.favorit, KeyRechte.loeschen] : lesen
         }
     }
@@ -155,6 +186,10 @@ final class PhoneEinrichtung {
             ergebnis = .abgelehnt
         } catch APIError.apiKeyLacksPermission {
             ergebnis = .ohneAlbumRecht
+        } catch APIError.anmeldeseiteDazwischen {
+            ergebnis = .fehler(OnboardingTexts.keyProxyAnmeldung)
+        } catch APIError.serverFehler {
+            ergebnis = .fehler(OnboardingTexts.keyServerFehler)
         } catch {
             ergebnis = .fehler(error.localizedDescription)
         }

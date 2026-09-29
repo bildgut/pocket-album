@@ -85,6 +85,7 @@ Create a key in Immich (web → Account Settings → API Keys) with these permis
 | `asset.download` | offline albums, sharing originals |
 | `asset.statistics` | counts and filter chips in Explore |
 | `person.read` | people in Explore |
+| `user.read` | recognizing a switch to another account (clears the previous account's cache) |
 | `asset.update` *(optional)* | favorite button |
 | `asset.delete` *(optional)* | move to trash |
 

@@ -43,14 +43,15 @@ struct PhoneFeedRaster: View {
             fuss
         }
         // Über die **flache** Liste, nicht über den Tagesabschnitt: Wischen im
-        // Einzelbild läuft über Tagesgrenzen hinweg. Die Rückrufe halten das
-        // Raster mit dem Einzelbild gleich (Papierkorb, Stern).
+        // Einzelbild läuft über Tagesgrenzen hinweg. Der Rückruf hält das
+        // Raster beim Papierkorb gleich; den Stern meldet das Einzelbild app-weit.
         .fullScreenCover(item: $praesentierterStartindex) { start in
             PhoneAssetView(
                 eintraege: feed.eintraege,
                 start: start.index,
-                onGeloescht: { id in Task { await feed.entferne(assetId: id) } },
-                onFavoritGeaendert: { id, ist in feed.setzeFavorit(assetId: id, ist: ist) }
+                onGeloescht: { id in Task { await feed.entferne(assetId: id) } }
+                // Kein `onFavoritGeaendert`: Der Stern läuft über
+                // ``PhoneFavoritMeldung`` und erreicht so **jeden** Feed.
             )
         }
     }

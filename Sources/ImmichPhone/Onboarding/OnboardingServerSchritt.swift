@@ -26,13 +26,18 @@ struct OnboardingServerSchritt: View {
                     if modell.server == .prueft {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button(OnboardingTexts.einfuegen) {
-                            guard let text = UIPasteboard.general.string else { return }
-                            eingefuegt = true
-                            eingabe = ServerAdresse.ausZwischenablage(text)
+                        // `PasteButton` statt `UIPasteboard`: Der Systemknopf liefert ohne
+                        // die Rückfrage „… möchte einfügen“.
+                        PasteButton(payloadType: String.self) { texte in
+                            guard let text = texte.first else { return }
+                            Task { @MainActor in
+                                eingefuegt = true
+                                eingabe = ServerAdresse.ausZwischenablage(text)
+                            }
                         }
+                        .labelStyle(.titleOnly)
+                        .buttonBorderShape(.capsule)
                         .font(.footnote.weight(.semibold))
-                        .buttonStyle(.bordered)
                         .tint(farben.text)
                     }
                 }

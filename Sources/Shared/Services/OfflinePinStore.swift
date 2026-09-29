@@ -92,8 +92,10 @@ enum OfflinePinStore {
         apiClient: ImmichAPIClient
     ) {
         let container = context.container
+        let pinId = OfflinePin.pinId(kind: kind, targetId: targetId)
 
         if pinned {
+            OfflineSyncProgress.shared.markiereGepinnt(pinId)
             pin(kind: kind, targetId: targetId, displayName: displayName, assetIds: assetIds, in: context)
             if kind == .album { setLegacyFlag(true, albumId: targetId, in: context) }
             try? context.save()
@@ -109,6 +111,11 @@ enum OfflinePinStore {
             unpin(kind: kind, targetId: targetId, in: context)
             if kind == .album { setLegacyFlag(false, albumId: targetId, in: context) }
             try? context.save()
+            // Ein laufender Durchgang trägt den Vermerk womöglich noch in seiner
+            // Arbeitsliste: nicht weiterladen, nichts mehr daran schreiben, die
+            // WLAN-Marke nicht wieder setzen.
+            OfflineSyncProgress.shared.markiereFreigegeben(pinId)
+            Task { await OfflineDownloadManager.shared.verwirf(pinId: pinId) }
 
             let cacheDays = AppEnvironment.defaults.integer(forKey: "localFileCacheDays")
             Task.detached(priority: .background) {

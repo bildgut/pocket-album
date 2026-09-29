@@ -12,17 +12,42 @@ enum PhoneOrtsKatalogAufbau {
     private struct LandErgebnis: Sendable {
         let name: String
         let land: PhoneOrtsLand?
+        /// Die Zählabfrage kam mit 403 zurück — dem Schlüssel fehlt `asset.statistics`.
+        var statistikAbgelehnt = false
     }
 
-    /// - Parameter vorher: der bisherige Katalog. Aus ihm kommen die
-    ///   Städte-Anzahlen (dieser Lauf zählt keine Städte) und der Stand eines
-    ///   Landes, dessen Anfragen diesmal scheitern. `nil` beim manuellen Neuaufbau.
+    static let statistikRecht = "asset.statistics"
+
+    /// Katalog plus die Auskunft, ob der Server die Zählabfrage mit 403 abwies.
+    struct Ergebnis: Sendable {
+        let katalog: PhoneOrtsKatalog
+        let statistikAbgelehnt: Bool
+    }
+
+    /// - Parameter vorher: der bisherige Katalog. Aus ihm kommt der Stand eines
+    ///   Landes, dessen Anfragen diesmal scheitern. Seine Städte-Anzahlen **nicht**:
+    ///   Sie würden sonst nie aufgefrischt; beim nächsten Öffnen zählt der Reiter neu. `nil` beim manuellen Neuaufbau.
     /// - Throws: nur, wenn schon die Länderliste nicht kommt.
     static func aufbauen(
         apiClient: ImmichAPIClient,
         vorher: PhoneOrtsKatalog?,
-        jetzt: Date = Date()
+        jetzt: Date = Date(),
+        statistikErlaubt: Bool = true
     ) async throws -> PhoneOrtsKatalog {
+        try await aufbauenMitMeldung(apiClient: apiClient, vorher: vorher, jetzt: jetzt,
+                                     statistikErlaubt: statistikErlaubt).katalog
+    }
+
+    /// Wie ``aufbauen(apiClient:vorher:jetzt:statistikErlaubt:)``. Ohne das Recht
+    /// `asset.statistics` (oder nach einem 403 darauf) bleibt `anzahl` `nil` —
+    /// früher scheiterte daran das **ganze** Land: Platzhalter ohne Titelbild,
+    /// `aufgebautAm` nil und damit bei jedem Öffnen ein Neuaufbau mit ~101 Anfragen.
+    static func aufbauenMitMeldung(
+        apiClient: ImmichAPIClient,
+        vorher: PhoneOrtsKatalog?,
+        jetzt: Date = Date(),
+        statistikErlaubt: Bool = true
+    ) async throws -> Ergebnis {
         let namen = try await apiClient.searchSuggestions(type: "country")
 
         let ergebnisse = await withTaskGroup(of: LandErgebnis.self) { gruppe in
@@ -33,7 +58,7 @@ enum PhoneOrtsKatalogAufbau {
                     gesammelt[fertig.name] = fertig
                     laufend -= 1
                 }
-                gruppe.addTask { await land(name, apiClient: apiClient) }
+                gruppe.addTask { await land(name, apiClient: apiClient, zaehlen: statistikErlaubt) }
                 laufend += 1
             }
             for await fertig in gruppe {
@@ -48,7 +73,9 @@ enum PhoneOrtsKatalogAufbau {
             if let neu = ergebnisse[name]?.land {
                 // Ein Land, das nur archivierte oder gelöschte Fotos hat, führt die
                 // Vorschlagsliste trotzdem — im Reiter wäre es eine leere Kachel.
-                if neu.anzahl > 0 { laender.append(neu) }
+                // Ohne Zählung entscheidet das jüngste sichtbare Foto.
+                let hatFotos = neu.anzahl.map { $0 > 0 } ?? (neu.titelbildId != nil)
+                if hatFotos { laender.append(neu) }
             } else {
                 vollstaendig = false
                 laender.append(vorher?.land(name) ?? PhoneOrtsLand(
@@ -58,18 +85,20 @@ enum PhoneOrtsKatalogAufbau {
         }
 
         AppLogger.cache.info("Ortskatalog: \(laender.count, privacy: .public) Länder, vollständig: \(vollstaendig, privacy: .public)")
-        return PhoneOrtsKatalog(
+        let katalog = PhoneOrtsKatalog(
             basis: apiClient.baseURL.absoluteString,
             laender: laender,
             aufgebautAm: vollstaendig ? jetzt : nil,
-            staedteAnzahlen: vorher?.staedteAnzahlen ?? [:]
+            staedteAnzahlen: [:]
         )
+        return Ergebnis(katalog: katalog, statistikAbgelehnt: ergebnisse.values.contains { $0.statistikAbgelehnt })
     }
 
-    private static func land(_ name: String, apiClient: ImmichAPIClient) async -> LandErgebnis {
+    private static func land(_ name: String, apiClient: ImmichAPIClient, zaehlen: Bool) async -> LandErgebnis {
         let filter = PhoneSuchAuswahl.land(name).searchFilter()
+        // Ein 403 auf die Zählung ist kein Ausfall des Landes.
+        async let zaehlung = zaehle(filter, apiClient: apiClient, zaehlen: zaehlen)
         do {
-            async let anzahl = apiClient.searchStatistics(filter: filter)
             async let staedte = apiClient.searchSuggestions(type: "city", country: name)
             async let regionen = apiClient.searchSuggestions(type: "state", country: name)
             async let juengstes = apiClient.searchAssets(query: AssetSearchQuery(
@@ -78,17 +107,26 @@ enum PhoneOrtsKatalogAufbau {
                 size: 1
             ))
             let erstes = try await juengstes.items?.first
+            let (anzahl, abgelehnt) = try await zaehlung
             return LandErgebnis(name: name, land: PhoneOrtsLand(
                 name: name,
-                anzahl: try await anzahl,
+                anzahl: anzahl,
                 zuletzt: erstes?.localDateTime ?? erstes?.fileCreatedAt,
                 titelbildId: erstes?.id,
                 staedte: try await staedte,
                 regionen: try await regionen
-            ))
+            ), statistikAbgelehnt: abgelehnt)
         } catch {
             AppLogger.cache.error("Ortskatalog: \(name, privacy: .public) gescheitert: \(error.localizedDescription, privacy: .public)")
             return LandErgebnis(name: name, land: nil)
         }
+    }
+
+    /// (Anzahl, 403?). Nur ein 403 — fehlendes Recht — ergibt „keine Zahl“; jeder
+    /// andere Fehler bleibt ein Ausfall des Landes (Teilausfall, neuer Versuch).
+    private static func zaehle(_ filter: SearchFilter, apiClient: ImmichAPIClient, zaehlen: Bool) async throws -> (Int?, Bool) {
+        guard zaehlen else { return (nil, false) }
+        do { return (try await apiClient.searchStatistics(filter: filter), false) }
+        catch APIError.httpError(403) { return (nil, true) }
     }
 }

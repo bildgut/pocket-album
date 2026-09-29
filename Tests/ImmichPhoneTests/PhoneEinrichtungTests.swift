@@ -174,8 +174,8 @@ struct PhoneEinrichtungKeyTests {
 
     @Test("Umfang bestimmt die Rechte-Liste")
     func umfang() {
-        #expect(PhoneEinrichtung.Umfang.nurAnsehen.rechte == ["album.read", "asset.read", "asset.view", "asset.download", "asset.statistics", "person.read"])
-        #expect(PhoneEinrichtung.Umfang.voll.rechte == ["album.read", "asset.read", "asset.view", "asset.download", "asset.statistics", "person.read", "asset.update", "asset.delete"])
+        #expect(PhoneEinrichtung.Umfang.nurAnsehen.rechte == ["album.read", "asset.read", "asset.view", "asset.download", "asset.statistics", "person.read", "user.read"])
+        #expect(PhoneEinrichtung.Umfang.voll.rechte == ["album.read", "asset.read", "asset.view", "asset.download", "asset.statistics", "person.read", "user.read", "asset.update", "asset.delete"])
     }
 }
 

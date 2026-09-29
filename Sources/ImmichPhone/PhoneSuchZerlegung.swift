@@ -18,7 +18,7 @@ enum PhoneSuchZerlegung {
         var katalog = SearchCatalog()
         katalog.people = personen.filter { !$0.name.isEmpty && $0.isHidden != true }
         let laender = orte?.laender ?? []
-        katalog.countries = laender.map { (country: $0.name, count: $0.anzahl) }
+        katalog.countries = laender.map { (country: $0.name, count: $0.anzahl ?? 0) }
         var staedte: [String: Int] = [:]
         for land in laender {
             for stadt in land.staedte { staedte[stadt, default: 0] += 1 }

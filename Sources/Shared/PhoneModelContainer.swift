@@ -30,6 +30,16 @@ enum PhoneModelContainer {
         return ergebnis.container
     }()
 
+    /// Zwei Versuche mit 0,2 s Pause statt drei mit je 2 s. Das Öffnen läuft beim
+    /// Start auf dem Hauptthread (`shared`), jede Pause friert den Startbildschirm
+    /// ein — bis zu 4 s vor dem Beiseitelegen. Der Sperrfall, für den die Pause auf
+    /// dem Mac gedacht war (eine noch beendende zweite Instanz hält die Migration),
+    /// kommt auf iOS nicht vor: Es gibt genau einen App-Prozess und keine
+    /// Erweiterung, die den Store öffnet. Ein zweiter Versuch fängt noch einen
+    /// kurzen Dateisystem-Schluckauf ab.
+    static let standardVersuche = 2
+    static let standardPause: TimeInterval = 0.2
+
     /// Merker für die App: Der Store wurde beim Start ersetzt. `PhoneRootView`
     /// zeigt dazu einmal einen Hinweis und setzt ihn zurück.
     static let storeZurueckgesetztKey = "phoneStoreZurueckgesetzt"
@@ -45,7 +55,7 @@ enum PhoneModelContainer {
         case nurImSpeicher
     }
 
-    /// Öffnet den Store; scheitert das dreimal, wird er beiseitegelegt und leer neu
+    /// Öffnet den Store; scheitert das wiederholt, wird er beiseitegelegt und leer neu
     /// angelegt; scheitert auch das, bleibt ein Container im Speicher.
     ///
     /// Früher stand hier ein `fatalError`: Eine kaputte Datei hätte die App bei
@@ -61,8 +71,8 @@ enum PhoneModelContainer {
     /// entfernt, damit sich bei wiederkehrendem Fehler keine Gigabyte stapeln.
     static func oeffneMitRettung(
         at url: URL,
-        versuche: Int = 3,
-        pause: TimeInterval = 2,
+        versuche: Int = standardVersuche,
+        pause: TimeInterval = standardPause,
         jetzt: Date = Date()
     ) -> (container: ModelContainer, rettung: Rettung) {
         do {
@@ -128,7 +138,7 @@ enum PhoneModelContainer {
     }
 
     /// Öffnet den Store an `url`. Wirft nach `versuche` Fehlversuchen den letzten Fehler.
-    static func make(at url: URL, versuche: Int = 3, pause: TimeInterval = 2) throws -> ModelContainer {
+    static func make(at url: URL, versuche: Int = standardVersuche, pause: TimeInterval = standardPause) throws -> ModelContainer {
         let config = ModelConfiguration(url: url)
         var lastError: Error?
 

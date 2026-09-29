@@ -1,4 +1,5 @@
 import Foundation
+import Nuke
 import SwiftData
 
 /// Räumt beim Abmelden die **kontogebundenen** Daten aus dem Store.
@@ -31,13 +32,14 @@ enum AccountDataPurge {
         static let alles = Umfang(offlineOriginale: true)
     }
 
-    /// Der ganze Weg: aufräumen, dann abmelden.
+    /// Der ganze Weg: abmelden, Hintergrundläufe anhalten, dann aufräumen.
     ///
-    /// **Die Reihenfolge ist nicht beliebig.** `disconnect()` setzt
-    /// `imagePipeline` und `thumbnailCache` auf `nil` — der Nuke-Teil muss also
-    /// davor laufen, sonst räumt er ins Leere und der Aufruf sieht trotzdem
-    /// erfolgreich aus. Aus demselben Grund steht das Abmelden ganz am Ende und
-    /// nicht, wie man es zuerst schriebe, am Anfang.
+    /// **Die Reihenfolge ist nicht beliebig.** Zuerst `disconnect()`: Es sendet
+    /// `.connectionDidDisconnect`, und erst danach hören Sync, Offline-Lader und
+    /// Co. auf, in Store, Rasterindex und Dateicache zu schreiben — räumte man
+    /// vorher auf, legte ein laufender Durchgang die Zeilen gleich wieder an.
+    /// `disconnect()` setzt `imagePipeline` und den Plattencache auf `nil`; beide
+    /// werden deshalb **vorher** festgehalten und danach geräumt.
     ///
     /// Den Fotos-Reiter (`PhonePhotoFeed.leere()`) ruft die iOS-Ansicht selbst
     /// im Anschluss — er hängt als `@State` an `PhoneRootView` und hat in
@@ -49,8 +51,14 @@ enum AccountDataPurge {
         container: ModelContainer,
         defaults: UserDefaults = AppEnvironment.defaults
     ) async {
+        let caches = connection.bildCaches
+        connection.disconnect()
+        // Abbrechen UND auf das Ende warten: `cancel()` allein setzte nur die Marke,
+        // eine gerade schreibende Datei konnte danach noch in der geleerten Ablage landen.
+        await OfflineDownloadManager.shared.abbrechenUndWarten()
+
         purgeStore(context: ModelContext(container), umfang: umfang)
-        purgeDefaults(defaults)
+        purgeDefaults(defaults, offlineDaten: umfang.offlineOriginale)
         GridIndexStore.shared.deleteAll()
 
         // Der Nuke-Cache ist hier **nicht** der Befund, sondern eine Aufräum-
@@ -61,14 +69,12 @@ enum AccountDataPurge {
         // Falsche Bilder kann er nicht zeigen. Liegen bleiben die Thumbnails des
         // Vorbesitzers trotzdem, unerreichbar für die Oberfläche, aber auf der
         // Platte. Das genügt als Grund.
-        connection.clearThumbnailCache()
-        connection.imagePipeline?.cache.removeAll()
+        caches.platte?.removeAll()
+        caches.pipeline?.cache.removeAll()
 
         if umfang.offlineOriginale {
             await LocalFileCacheManager.shared.clearAll(container: container)
         }
-
-        connection.disconnect()
     }
 
     /// Kontowechsel: Die neuen Zugangsdaten gehören zu einem anderen Konto als die
@@ -81,8 +87,9 @@ enum AccountDataPurge {
         container: ModelContainer,
         defaults: UserDefaults = AppEnvironment.defaults
     ) async {
+        await OfflineDownloadManager.shared.abbrechenUndWarten()
         purgeStore(context: ModelContext(container), umfang: .alles)
-        purgeDefaults(defaults)
+        purgeDefaults(defaults, offlineDaten: true)
         GridIndexStore.shared.deleteAll()
         await LocalFileCacheManager.shared.clearAll(container: container)
     }
@@ -127,9 +134,19 @@ enum AccountDataPurge {
     /// Ausdrücklich namentlich und nicht über `removePersistentDomain`:
     /// `AppEnvironment.defaults` ist die Ablage der ganzen App und enthält unter
     /// anderem den Gemini-Schlüssel, der ein Abmelden überleben soll.
-    static func purgeDefaults(_ defaults: UserDefaults) {
+    ///
+    /// Mit `offlineDaten` fallen auch die Offline-Wahl je Vermerk und die Abkühlmarke
+    /// des Offline-Laders — sonst gälte die Wahl des Vorkontos für gleichnamige
+    /// `pinId`s weiter, und der erste Lauf danach wartete 15 Minuten.
+    static let offlineSchluessel = [OfflineWahlSpeicher.schluessel, OfflineWahlSpeicher.letzteSchluessel,
+                                           "offlineSync.lastSyncDate"]
+
+    static func purgeDefaults(_ defaults: UserDefaults, offlineDaten: Bool = false) {
         defaults.removeObject(forKey: "hasCompletedInitialSync")
         defaults.removeObject(forKey: "hasCachedAlbums")
+        if offlineDaten {
+            for schluessel in offlineSchluessel { defaults.removeObject(forKey: schluessel) }
+        }
     }
 
     /// Löscht alle Zeilen eines Modells außer denen, deren Schlüssel in

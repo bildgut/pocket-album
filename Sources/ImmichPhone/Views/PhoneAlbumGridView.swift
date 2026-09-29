@@ -144,7 +144,10 @@ struct PhoneAlbumGridView: View {
             // Kacheln darunter dabei nach oben/unten springen — ein
             // Abschnitt *in* der `LazyVGrid` würde bei jedem Wechsel die
             // Zeilenumbrüche aller folgenden Kacheln neu berechnen.
-            .safeAreaInset(edge: .top) {
+            // **Unten**, über der Reiterleiste: Oben schob der Einschub den
+            // großen Titel „Albums“ aus dem Bild — übrig blieb ein leerer Block
+            // von rund 180 pt über der Leiste (Praxistest).
+            .safeAreaInset(edge: .bottom) {
                 if OfflineSyncProgress.shared.isActive {
                     offlineProgressBanner
                 }

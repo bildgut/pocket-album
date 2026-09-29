@@ -49,6 +49,9 @@ struct PhoneEntdeckenView: View {
         // nicht neu, und dieser `.task` würde ohne die Ergänzung nie erneut
         // laufen (Befund aus der Review).
         .task(id: erscheintID) {
+            let connection = connection
+            modell.darf = { connection.keyRechte.darf($0) }
+            modell.merkeAbgelehnt = { connection.merkeAbgelehnt($0) }
             await modell.erscheint(apiClient: apiClient, offline: istOffline)
             guard !istOffline else { return }
             await modell.ladeEinstiege(
@@ -116,7 +119,13 @@ struct PhoneEntdeckenView: View {
                 zuletztAbschnitt
                 personenAbschnitt
                 if modell.katalog?.laender.isEmpty == false {
-                    abschnittsKopf(PhoneOrtsTexts.orte)
+                    VStack(alignment: .leading, spacing: 2) {
+                        abschnittsKopf(PhoneOrtsTexts.orte)
+                        Text(PhoneOrtsTexts.nurMitOrt)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 14)
+                    }
                 }
                 orteAbschnitt
                 jahreAbschnitt

@@ -11,7 +11,9 @@ struct PhoneOrtsChip: Identifiable, Hashable, Sendable, Codable {
 
 struct PhoneOrtsLand: Identifiable, Hashable, Sendable, Codable {
     let name: String
-    var anzahl: Int
+    /// `nil`, wenn der Schlüssel `asset.statistics` nicht hat — dann zeigt die
+    /// Ansicht keine Zahl, statt das Land zu verwerfen.
+    var anzahl: Int?
     /// `localDateTime` des jüngsten Fotos („2025-11-24T08:10:23.000Z"); `nil`, wenn
     /// die Sondierung scheiterte oder das Land nur ein Platzhalter ist.
     var zuletzt: String?
@@ -39,7 +41,8 @@ struct PhoneOrtsKatalog: Hashable, Sendable, Codable {
     /// Dann gilt der Katalog nie als frisch, und die nächste Öffnung versucht es neu.
     var aufgebautAm: Date?
     /// Land → gezählte Städte, nach Anzahl absteigend. Gefüllt beim Öffnen eines
-    /// Landes, nicht beim Aufbau.
+    /// Landes, nicht beim Aufbau — und beim Neuaufbau **verworfen**, sonst blieben
+    /// die Zahlen für immer auf dem Stand des ersten Öffnens.
     var staedteAnzahlen: [String: [PhoneOrtsChip]] = [:]
 
     func istFrisch(jetzt: Date) -> Bool {

@@ -51,6 +51,12 @@ final class PhoneOrtsModell {
         self.speicher = speicher
     }
 
+    /// Fragt die Key-Rechte ab (`ConnectionManager.keyRechte.darf`). Die Ansicht
+    /// setzt beides; ohne sie gilt alles als erlaubt und ein 403 bleibt ungemerkt.
+    @ObservationIgnored var darf: @MainActor (String) -> Bool = { _ in true }
+    /// Merkt ein Recht als abgelehnt (`ConnectionManager.merkeAbgelehnt`).
+    @ObservationIgnored var merkeAbgelehnt: @MainActor (String) -> Void = { _ in }
+
     var treffer: [PhoneOrtsTreffer] {
         PhoneOrtsSuche.treffer(suchtext, in: katalog)
     }
@@ -125,9 +131,14 @@ final class PhoneOrtsModell {
         aufbauServer = apiClient.baseURL
         baut = true
         let vorherKatalog = neuEinlesen ? nil : katalog
+        let statistikErlaubt = darf(PhoneOrtsKatalogAufbau.statistikRecht)
         let lauf = Task<Void, Never> {
             do {
-                let neu = try await PhoneOrtsKatalogAufbau.aufbauen(apiClient: apiClient, vorher: vorherKatalog, jetzt: jetzt)
+                let ergebnis = try await PhoneOrtsKatalogAufbau.aufbauenMitMeldung(
+                    apiClient: apiClient, vorher: vorherKatalog, jetzt: jetzt, statistikErlaubt: statistikErlaubt
+                )
+                if ergebnis.statistikAbgelehnt { self.merkeAbgelehnt(PhoneOrtsKatalogAufbau.statistikRecht) }
+                let neu = ergebnis.katalog
                 // Ein Serverwechsel während des Laufs: Das Ergebnis gehört nicht mehr hierher.
                 // Ein Abmelden ebenso — auch wenn danach dieselbe Adresse mit einem
                 // anderen Schlüssel wieder erscheint und der Adressabgleich wieder passt.
@@ -300,15 +311,23 @@ final class PhoneOrtsModell {
         einstiegeLauf &+= 1
         let lauf = einstiegeLauf
         laedtEinstiege = true
+        let statistikErlaubt = darf(PhoneOrtsKatalogAufbau.statistikRecht)
         let aufgabe = Task { [weak self] in
             async let leute: [Person] = personenErlaubt ? ((try? await apiClient.getPeople()) ?? []) : []
-            async let spanne = Self.jahresSpanne(apiClient: apiClient)
+            async let jahresLeiste: PhoneJahresZaehlung.Ergebnis = {
+                let (aeltestes, juengstes) = await Self.jahresSpanne(apiClient: apiClient)
+                return await PhoneJahresZaehlung.jahre(
+                    aeltestes: aeltestes, juengstes: juengstes,
+                    statistikErlaubt: statistikErlaubt, apiClient: apiClient
+                )
+            }()
             let geladen = await leute
-            let (aeltestes, juengstes) = await spanne
+            let gezaehlt = await jahresLeiste
             guard let self, lauf == self.einstiegeLauf else { return }
+            if gezaehlt.statistikAbgelehnt { self.merkeAbgelehnt(PhoneOrtsKatalogAufbau.statistikRecht) }
             self.allePersonen = Self.sichtbar(geladen)
             self.personen = Array(self.allePersonen.prefix(12))
-            self.jahre = Self.jahre(aeltestes: aeltestes, juengstes: juengstes)
+            self.jahre = gezaehlt.jahre
         }
         einstiegeTask = aufgabe
         await aufgabe.value

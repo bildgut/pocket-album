@@ -281,6 +281,16 @@
         }
       }
     },
+    "%lld failed": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld fehlgeschlagen"
+          }
+        }
+      }
+    },
     "%lld items": {
       "localizations": {
         "de": {
@@ -327,6 +337,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$lld von %2$lld"
+          }
+        }
+      }
+    },
+    "%lld of %lld files couldn't be downloaded.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld von %2$lld Dateien konnten nicht geladen werden."
           }
         }
       }
@@ -467,6 +487,16 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "%lld/%lld files": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld/%2$lld Dateien"
           }
         }
       }
@@ -631,6 +661,16 @@
         }
       }
     },
+    "Cancelling…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird abgebrochen…"
+          }
+        }
+      }
+    },
     "Can’t reach this address.": {
       "localizations": {
         "de": {
@@ -747,6 +787,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Kopieren"
+          }
+        }
+      }
+    },
+    "Couldn't load the album from the server: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Album konnte nicht vom Server geladen werden: %@"
           }
         }
       }
@@ -1481,6 +1531,26 @@
         }
       }
     },
+    "Original videos keep full quality but can take up a lot of space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originalvideos behalten die volle Qualität, können aber viel Platz belegen."
+          }
+        }
+      }
+    },
+    "Originals keep every detail and all metadata, and need the most space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originale behalten jedes Detail und alle Metadaten und brauchen den meisten Platz."
+          }
+        }
+      }
+    },
     "Password": {
       "localizations": {
         "de": {
@@ -1557,6 +1627,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fotos nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Only photos with location data": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur Fotos mit Ortsangabe"
           }
         }
       }
@@ -1647,6 +1727,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pocket Album meldet sich einmal an, legt einen eigenen Key mit genau den gewählten Rechten an und vergisst dein Passwort."
+          }
+        }
+      }
+    },
+    "Preparing…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorbereitung…"
           }
         }
       }
@@ -2161,6 +2251,26 @@
         }
       }
     },
+    "The server redirects to a login page — proxy logins aren’t supported.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server leitet auf eine Anmeldeseite um – Proxy-Login wird nicht unterstützt."
+          }
+        }
+      }
+    },
+    "The server responded with an error. Please try again later.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server antwortet mit einem Fehler. Bitte später erneut versuchen."
+          }
+        }
+      }
+    },
     "The server has no photos yet.": {
       "localizations": {
         "de": {
@@ -2237,6 +2347,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dieses Album ist leer."
+          }
+        }
+      }
+    },
+    "This album no longer exists on the server, or you no longer have access. Remove it to free up space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Album gibt es auf dem Server nicht mehr, oder du hast keinen Zugriff mehr. Entferne es, um Platz freizugeben."
           }
         }
       }
@@ -2367,6 +2487,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Videos"
+          }
+        }
+      }
+    },
+    "Videos stay in the cloud and play only when you're online.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videos bleiben in der Cloud und spielen nur mit Verbindung."
           }
         }
       }

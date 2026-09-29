@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          cp Local.xcconfig.example Local.xcconfig
+          xcodegen generate
+
+      - name: Test
+        run: |
+          # Neuestes verfügbares iPhone nehmen statt einen Namen fest zu verdrahten
+          UDID=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+          print([x['udid'] for k in sorted(d) if 'iOS' in k for x in d[k] if 'iPhone' in x['name']][-1])")
+          xcodebuild test -project PocketAlbum.xcodeproj -scheme ImmichPhoneTests \
+            -destination "id=$UDID" CODE_SIGNING_ALLOWED=NO

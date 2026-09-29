@@ -131,6 +131,11 @@ targets:
           - Services/AppleResourcePicker.swift
           - Services/FavoritesSyncManager.swift
           - Services/UploadManager.swift
+          # Bild-Einordnung per FoundationModels gibt es nur am Mac. Außerdem
+          # hat Xcode 27 den Parameter `sampling:` in `samplingMode:` umbenannt;
+          # mit diesen Dateien baut die iOS-App unter Xcode 26 (GitHub-CI) nicht.
+          - Services/FoundationModelsEinordner.swift
+          - Services/InfoBild*.swift
       - path: Sources/ImmichPhone
         excludes:
           - Resources

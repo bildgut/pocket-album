@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/ralksta/pocket-album/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
+  - name: Questions and ideas to discuss
+    url: https://github.com/ralksta/pocket-album/discussions
+    about: Not sure if it's a bug? Ask here first.
+  - name: Problem with the Immich server itself
+    url: https://github.com/immich-app/immich/discussions
+    about: Server, web UI or official app issues belong to the Immich project.

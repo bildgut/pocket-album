@@ -1,0 +1,81 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this!
+
+        ⚠️ **Please don't post your API key, your server address or private photos** — not in the text and not in screenshots. Blur or crop them if needed.
+  - type: input
+    id: app-version
+    attributes:
+      label: Pocket Album version
+      description: Settings → at the bottom (e.g. 0.9.0 (1))
+      placeholder: 0.9.0 (1)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: iPhone model and iOS version
+      placeholder: iPhone 16 Pro, iOS 26.1
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Immich server version
+      description: Shown in Pocket Album under Settings, or in the Immich web UI
+      placeholder: v3.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How does the phone reach your server?
+      multiple: true
+      options:
+        - HTTPS over the internet
+        - HTTP on my home network
+        - VPN (e.g. Tailscale, WireGuard)
+        - Reverse proxy with its own login (e.g. Authelia, Cloudflare Access)
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: API key permissions
+      description: Many problems come from missing permissions. Tick what your key has (or "all").
+      options:
+        - label: all
+        - label: album.read
+        - label: asset.read / asset.view
+        - label: asset.download
+        - label: asset.statistics
+        - label: person.read
+        - label: user.read
+        - label: asset.update / asset.delete
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Albums
+        2. Long-press an album → Keep Offline
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or anything else
+      description: Optional. Please remove personal data first.

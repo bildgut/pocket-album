@@ -1,0 +1,30 @@
+name: Feature idea
+description: Suggest something Pocket Album could do better
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pocket Album focuses on **showing and finding** photos — there's no upload or backup on purpose (the official Immich app does that well). Ideas that fit that focus are the most likely to happen.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation, not only the solution.
+      placeholder: When I'm offline and want to show someone …
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How do you imagine it?
+    validations:
+      required: true
+  - type: dropdown
+    id: official-app
+    attributes:
+      label: Does the official Immich app do this?
+      options:
+        - "Yes"
+        - "No"
+        - Not sure

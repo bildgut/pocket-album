@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy · Pocket Album</title>
+<link rel="icon" href="../assets/symbol.png">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<main>
+  <p><a href="../">← Pocket Album</a></p>
+  <h1>Privacy Policy</h1>
+  <p class="unter">Last updated: September 30, 2026</p>
+
+  <p>Pocket Album is an unofficial iOS client for <a href="https://immich.app/">Immich</a>, a photo server you host yourself. It is not affiliated with or endorsed by the Immich project.</p>
+
+  <h2>What the app collects</h2>
+  <p><strong>Nothing.</strong> The developer of Pocket Album receives no data from the app: no analytics, no crash reports, no advertising identifiers, no tracking. The app contains no third-party analytics or advertising code.</p>
+
+  <h2>Where your data goes</h2>
+  <p>The app talks <strong>only to the Immich server whose address you enter</strong>. Photos, videos, album and person names, locations and other metadata are loaded from that server and shown on your phone. Changes you make (favorite, move to trash) are sent to that server.</p>
+
+  <h2>What is stored on your phone</h2>
+  <ul class="liste">
+    <li><strong>Server address and API key</strong>, in a file only the app can read, protected by iOS data protection and excluded from device backups.</li>
+    <li><strong>Your password</strong> is never stored. If you choose “sign in instead” during setup, it is sent once to your server to create an API key, then discarded.</li>
+    <li><strong>Cached metadata and thumbnails</strong>, so the app starts quickly and works offline.</li>
+    <li><strong>Offline albums</strong>: photos (as previews or originals) and videos of albums you choose to keep on the phone, excluded from device backups.</li>
+    <li><strong>An account fingerprint</strong>: a one-way hash of your server address and API key, so the app notices when you sign in to a different account and clears the previous account's cache. It can't be turned back into your key.</li>
+  </ul>
+  <p>Delete the app to remove all of this. Signing out removes the server address and API key.</p>
+
+  <h2>Network security</h2>
+  <p>Plain <code>http://</code> addresses are allowed so that servers on a home network or VPN work. In that case your API key and photos travel unencrypted, so use <code>https://</code> when you reach your server over the internet.</p>
+
+  <h2>Children</h2>
+  <p>The app is not directed at children and collects no data from anyone.</p>
+
+  <h2>Contact</h2>
+  <p>Questions: <a href="https://github.com/ralksta/pocket-album/issues">GitHub Issues</a> or the <a href="../support/">support page</a>.</p>
+
+  <footer><a href="../">Pocket Album</a> · <a href="../support/">Support</a> · <a href="https://github.com/ralksta/pocket-album">GitHub</a></footer>
+</main>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Privacy Policy — Pocket Album
 
-*Last updated: September 28, 2026*
+*Last updated: September 30, 2026*
 
 Pocket Album is an unofficial iOS client for [Immich](https://immich.app/), a photo server
 you host yourself. It is not affiliated with or endorsed by the Immich project.
@@ -24,8 +24,11 @@ on your phone. Changes you make (favorite, move to trash) are sent to that serve
 - **Your password** — never stored. If you choose “sign in instead” during setup, it is sent
   once to your server to create an API key, then discarded.
 - **Cached metadata and thumbnails** — so the app starts quickly and works offline.
-- **Offline albums** — full-size photos and videos of albums you choose to keep on the phone,
-  excluded from device backups.
+- **Offline albums** — photos (as previews or originals) and videos of albums you choose to
+  keep on the phone, excluded from device backups.
+- **An account fingerprint** — a one-way hash of your server address and API key, so the app
+  notices when you sign in to a different account and clears the previous account's cache.
+  It can't be turned back into your key.
 
 Delete the app to remove all of this. Signing out removes the server address and API key.
 

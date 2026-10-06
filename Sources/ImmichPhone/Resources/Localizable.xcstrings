@@ -1,0 +1,2727 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "%@ · %lld albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · %#@n@"
+          },
+          "substitutions": {
+            "n": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Album"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Alben"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · %#@n@"
+          },
+          "substitutions": {
+            "n": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg album"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg albums"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%@, loaded %@.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@, eingelesen %2$@."
+          }
+        }
+      }
+    },
+    "%@, the last run was incomplete.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, der letzte Lauf war unvollständig."
+          }
+        }
+      }
+    },
+    "%lld albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@a@"
+          },
+          "substitutions": {
+            "a": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Album"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Alben"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@a@"
+          },
+          "substitutions": {
+            "a": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg album"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg albums"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld albums · %lld photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@a@ · %#@f@"
+          },
+          "substitutions": {
+            "a": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Album"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Alben"
+                    }
+                  }
+                }
+              }
+            },
+            "f": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Foto"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Fotos"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@a@ · %#@f@"
+          },
+          "substitutions": {
+            "a": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg album"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg albums"
+                    }
+                  }
+                }
+              }
+            },
+            "f": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg photo"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg photos"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld countries": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Land"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Länder"
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld country"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld countries"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld failed": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "%lld items": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Objekt"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Objekte"
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld item"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld items"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld of %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld von %2$lld"
+          }
+        }
+      }
+    },
+    "%lld of %lld files couldn't be downloaded.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld von %2$lld Dateien konnten nicht geladen werden."
+          }
+        }
+      }
+    },
+    "%lld of %lld photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld von %#@n@"
+          },
+          "substitutions": {
+            "n": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Foto"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg Fotos"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld of %#@n@"
+          },
+          "substitutions": {
+            "n": {
+              "argNum": 2,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg photo"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg photos"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld photos": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Foto"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Fotos"
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld photo"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld photos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld videos": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Video"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld Videos"
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld video"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld videos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld/%lld files": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld/%2$lld Dateien"
+          }
+        }
+      }
+    },
+    "API Key": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API-Key"
+          }
+        }
+      }
+    },
+    "API Keys → New API Key": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API-Schlüssel → Neuer API-Schlüssel"
+          }
+        }
+      }
+    },
+    "API key": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API-Key"
+          }
+        }
+      }
+    },
+    "Add to Favorites": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Als Favorit markieren"
+          }
+        }
+      }
+    },
+    "Address": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adresse"
+          }
+        }
+      }
+    },
+    "Album Unavailable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Album nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben"
+          }
+        }
+      }
+    },
+    "Albums & photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben & Fotos"
+          }
+        }
+      }
+    },
+    "All": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle"
+          }
+        }
+      }
+    },
+    "All %lld countries": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle %lld Länder"
+          }
+        }
+      }
+    },
+    "Also over Cellular": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auch über Mobilfunk"
+          }
+        }
+      }
+    },
+    "Anna 2019, beach, Italy …": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anna 2019, Strand, Italien …"
+          }
+        }
+      }
+    },
+    "Best Matches": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beste Treffer"
+          }
+        }
+      }
+    },
+    "Big on the TV": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Groß auf dem Fernseher"
+          }
+        }
+      }
+    },
+    "Build %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Build %@"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abbrechen"
+          }
+        }
+      }
+    },
+    "Cancelling…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird abgebrochen…"
+          }
+        }
+      }
+    },
+    "Can’t reach this address.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Adresse ist nicht erreichbar."
+          }
+        }
+      }
+    },
+    "Change Credentials": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zugangsdaten ändern"
+          }
+        }
+      }
+    },
+    "Cities": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Städte"
+          }
+        }
+      }
+    },
+    "City, %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stadt, %@"
+          }
+        }
+      }
+    },
+    "Close": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schließen"
+          }
+        }
+      }
+    },
+    "Connect": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbinden"
+          }
+        }
+      }
+    },
+    "Connected": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbunden"
+          }
+        }
+      }
+    },
+    "Connected · Immich %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbunden · Immich %@"
+          }
+        }
+      }
+    },
+    "Connecting…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbindet…"
+          }
+        }
+      }
+    },
+    "Continue": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weiter"
+          }
+        }
+      }
+    },
+    "Copied": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kopiert"
+          }
+        }
+      }
+    },
+    "Copy": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kopieren"
+          }
+        }
+      }
+    },
+    "Couldn't load the album from the server: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Album konnte nicht vom Server geladen werden: %@"
+          }
+        }
+      }
+    },
+    "Couldn’t determine the number of results.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Trefferzahl ließ sich nicht ermitteln."
+          }
+        }
+      }
+    },
+    "Counting…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird gezählt …"
+          }
+        }
+      }
+    },
+    "Country": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Land"
+          }
+        }
+      }
+    },
+    "Country, city or region": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Land, Stadt oder Region"
+          }
+        }
+      }
+    },
+    "Country, year, people — tap a few chips and thousands of photos become the ones you meant.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Land, Jahr, Personen antippen — und aus Tausenden Fotos bleiben genau die, die du suchst."
+          }
+        }
+      }
+    },
+    "Create a key in Immich": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key in Immich anlegen"
+          }
+        }
+      }
+    },
+    "Delete": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Löschen"
+          }
+        }
+      }
+    },
+    "Doesn’t work with single sign-on (OAuth). Use a key instead.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Funktioniert nicht mit Single Sign-on (OAuth) — dann bitte einen API-Key verwenden."
+          }
+        }
+      }
+    },
+    "Done": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fertig"
+          }
+        }
+      }
+    },
+    "Download Now": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jetzt laden"
+          }
+        }
+      }
+    },
+    "Email": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E-Mail"
+          }
+        }
+      }
+    },
+    "End Slideshow": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diashow beenden"
+          }
+        }
+      }
+    },
+    "Error": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehler"
+          }
+        }
+      }
+    },
+    "Error · %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehler · %@"
+          }
+        }
+      }
+    },
+    "Estimated Size": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geschätzte Größe"
+          }
+        }
+      }
+    },
+    "Explore": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entdecken"
+          }
+        }
+      }
+    },
+    "Favorite & delete": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriten & Löschen"
+          }
+        }
+      }
+    },
+    "Favorites": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriten"
+          }
+        }
+      }
+    },
+    "Favorites Unavailable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriten nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Favorites load directly from the server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriten werden direkt vom Server geladen."
+          }
+        }
+      }
+    },
+    "Find People (≈ %lld MB)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personen ermitteln (≈ %lld MB)"
+          }
+        }
+      }
+    },
+    "Find it in two taps": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schnell gefunden"
+          }
+        }
+      }
+    },
+    "Free on This iPhone": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Frei auf diesem iPhone"
+          }
+        }
+      }
+    },
+    "From your Immich account settings": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus den Immich-Kontoeinstellungen"
+          }
+        }
+      }
+    },
+    "How do I get a key?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wie bekomme ich einen Key?"
+          }
+        }
+      }
+    },
+    "Immich %@ found": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immich %@ gefunden"
+          }
+        }
+      }
+    },
+    "Keep Offline": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline speichern"
+          }
+        }
+      }
+    },
+    "Loading albums…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben werden geladen…"
+          }
+        }
+      }
+    },
+    "Loading favorites…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriten werden geladen …"
+          }
+        }
+      }
+    },
+    "Loading photos…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotos werden geladen…"
+          }
+        }
+      }
+    },
+    "Loading places…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orte werden eingelesen…"
+          }
+        }
+      }
+    },
+    "Loading videos…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videos werden geladen…"
+          }
+        }
+      }
+    },
+    "Local Data Reset": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lokale Daten zurückgesetzt"
+          }
+        }
+      }
+    },
+    "Move to Trash": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In den Papierkorb"
+          }
+        }
+      }
+    },
+    "Move to Trash?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In den Papierkorb legen?"
+          }
+        }
+      }
+    },
+    "My Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meine Alben"
+          }
+        }
+      }
+    },
+    "Name it “Pocket Album”, tick these permissions:": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Als Name „Pocket Album“ eintragen und diese Rechte ankreuzen:"
+          }
+        }
+      }
+    },
+    "Next Photo": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nächstes Bild"
+          }
+        }
+      }
+    },
+    "No Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Alben"
+          }
+        }
+      }
+    },
+    "No Albums Found": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Alben gefunden"
+          }
+        }
+      }
+    },
+    "No Favorites": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Favoriten"
+          }
+        }
+      }
+    },
+    "No Photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Fotos"
+          }
+        }
+      }
+    },
+    "No Places": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Orte"
+          }
+        }
+      }
+    },
+    "No Smart Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Smart Alben"
+          }
+        }
+      }
+    },
+    "No Smart Albums Found": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Smart Alben gefunden"
+          }
+        }
+      }
+    },
+    "No Videos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Videos"
+          }
+        }
+      }
+    },
+    "No album matches this search.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kein Album passt zu diesem Suchbegriff."
+          }
+        }
+      }
+    },
+    "No albums are kept offline. You’ll find the switch in an album tile’s context menu and in the album’s header.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kein Album wird offline vorgehalten. Der Schalter steckt im Kontextmenü einer Albumkachel und im Kopf des Albums."
+          }
+        }
+      }
+    },
+    "No albums in the offline cache.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Alben im Offline-Cache."
+          }
+        }
+      }
+    },
+    "No connection to the server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Verbindung zum Server."
+          }
+        }
+      }
+    },
+    "No photos in the offline cache for this album.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Fotos im Offline-Cache für dieses Album."
+          }
+        }
+      }
+    },
+    "No server connection: favoriting and deleting are unavailable.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ohne Serververbindung: Favorit und Löschen sind nicht möglich."
+          }
+        }
+      }
+    },
+    "No smart album matches this search.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kein Smart Album passt zu diesem Suchbegriff."
+          }
+        }
+      }
+    },
+    "None": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine"
+          }
+        }
+      }
+    },
+    "None of your photos has location data.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keines deiner Fotos trägt eine Ortsangabe."
+          }
+        }
+      }
+    },
+    "Not Connected": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht verbunden"
+          }
+        }
+      }
+    },
+    "Not enough free space for this choice.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Für diese Auswahl ist nicht genug Platz frei."
+          }
+        }
+      }
+    },
+    "Not fully downloaded yet.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch nicht vollständig geladen."
+          }
+        }
+      }
+    },
+    "Not loaded yet.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch nicht eingelesen."
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "Offline": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline"
+          }
+        }
+      }
+    },
+    "Offline Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline-Alben"
+          }
+        }
+      }
+    },
+    "Offline downloads": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben offline speichern"
+          }
+        }
+      }
+    },
+    "Offline · showing saved data": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline · zeigt gespeicherte Daten"
+          }
+        }
+      }
+    },
+    "Offline · showing saved places": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline · zeigt gespeicherte Orte"
+          }
+        }
+      }
+    },
+    "On This iPhone": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf dem Telefon"
+          }
+        }
+      }
+    },
+    "Only Videos in This Album": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur Videos in diesem Album"
+          }
+        }
+      }
+    },
+    "Open Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben öffnen"
+          }
+        }
+      }
+    },
+    "Open Immich": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immich öffnen"
+          }
+        }
+      }
+    },
+    "Open Immich → your avatar → Account Settings": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immich öffnen → dein Profilbild → Kontoeinstellungen"
+          }
+        }
+      }
+    },
+    "Open Source Licenses": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open-Source-Lizenzen"
+          }
+        }
+      }
+    },
+    "Or sign in to create one automatically": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oder anmelden — die App legt den Key selbst an"
+          }
+        }
+      }
+    },
+    "Original": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original"
+          }
+        }
+      }
+    },
+    "Original videos keep full quality but can take up a lot of space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originalvideos behalten die volle Qualität, können aber viel Platz belegen."
+          }
+        }
+      }
+    },
+    "Originals keep every detail and all metadata, and need the most space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originale behalten jedes Detail und alle Metadaten und brauchen den meisten Platz."
+          }
+        }
+      }
+    },
+    "Password": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passwort"
+          }
+        }
+      }
+    },
+    "Paste": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einfügen"
+          }
+        }
+      }
+    },
+    "Paste a key from Immich. Pocket Album checks what it’s allowed to do.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Füge einen Key aus Immich ein. Pocket Album prüft, was er darf."
+          }
+        }
+      }
+    },
+    "Pause": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        }
+      }
+    },
+    "People": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personen"
+          }
+        }
+      }
+    },
+    "Photo": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foto"
+          }
+        }
+      }
+    },
+    "Photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotos"
+          }
+        }
+      }
+    },
+    "Photos Unavailable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotos nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Only photos with location data": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur Fotos mit Ortsangabe"
+          }
+        }
+      }
+    },
+    "Places": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orte"
+          }
+        }
+      }
+    },
+    "Places & filters": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orte & Filter"
+          }
+        }
+      }
+    },
+    "Places Unavailable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orte nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Places come from the server. Albums kept offline are under Albums.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Orte kommen vom Server. Offline vorgehaltene Alben findest du unter Alben."
+          }
+        }
+      }
+    },
+    "Play": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weiter"
+          }
+        }
+      }
+    },
+    "Play Video": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video abspielen"
+          }
+        }
+      }
+    },
+    "Playing on TV": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Läuft auf dem Fernseher"
+          }
+        }
+      }
+    },
+    "Pocket Album needs Immich 3.2 or later. This server runs %@.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pocket Album braucht Immich 3.2 oder neuer. Dieser Server läuft mit Version %@."
+          }
+        }
+      }
+    },
+    "Pocket Album signs in once, creates its own key with exactly the permissions you chose, and forgets your password.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pocket Album meldet sich einmal an, legt einen eigenen Key mit genau den gewählten Rechten an und vergisst dein Passwort."
+          }
+        }
+      }
+    },
+    "Preparing…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorbereitung…"
+          }
+        }
+      }
+    },
+    "Preview": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorschau"
+          }
+        }
+      }
+    },
+    "Previews look sharp on screen and need about a tenth of the space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorschauen sind auf dem Bildschirm scharf und brauchen etwa ein Zehntel des Platzes."
+          }
+        }
+      }
+    },
+    "Previous Photo": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorheriges Bild"
+          }
+        }
+      }
+    },
+    "Recent Searches": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zuletzt gesucht"
+          }
+        }
+      }
+    },
+    "Region, %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Region, %@"
+          }
+        }
+      }
+    },
+    "Reload Places": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orte neu einlesen"
+          }
+        }
+      }
+    },
+    "Remove": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Freigeben"
+          }
+        }
+      }
+    },
+    "Remove Downloaded Originals": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geladene Originale entfernen"
+          }
+        }
+      }
+    },
+    "Remove Filters": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filter entfernen"
+          }
+        }
+      }
+    },
+    "Remove Offline Copy": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline-Kopie entfernen"
+          }
+        }
+      }
+    },
+    "Remove from Favorites": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorit entfernen"
+          }
+        }
+      }
+    },
+    "Remove from Recent Searches": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus „Zuletzt gesucht“ entfernen"
+          }
+        }
+      }
+    },
+    "Search Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben durchsuchen"
+          }
+        }
+      }
+    },
+    "Search Smart Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smart Alben durchsuchen"
+          }
+        }
+      }
+    },
+    "Search for “%@”": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suchen nach „%@“"
+          }
+        }
+      }
+    },
+    "Server": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server"
+          }
+        }
+      }
+    },
+    "Server Unreachable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server nicht erreichbar"
+          }
+        }
+      }
+    },
+    "Set Up": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einrichten"
+          }
+        }
+      }
+    },
+    "Settings": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einstellungen"
+          }
+        }
+      }
+    },
+    "Share": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Teilen"
+          }
+        }
+      }
+    },
+    "Shared Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geteilte Alben"
+          }
+        }
+      }
+    },
+    "Show": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anzeigen"
+          }
+        }
+      }
+    },
+    "Show Intro Again": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einführung erneut zeigen"
+          }
+        }
+      }
+    },
+    "Showing the 1,000 best matches.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Es werden die 1.000 besten Treffer gezeigt."
+          }
+        }
+      }
+    },
+    "Sign In & Create Key": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anmelden & Key anlegen"
+          }
+        }
+      }
+    },
+    "Sign Out": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abmelden"
+          }
+        }
+      }
+    },
+    "Sign Out?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abmelden?"
+          }
+        }
+      }
+    },
+    "Sign in instead": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stattdessen anmelden"
+          }
+        }
+      }
+    },
+    "Signed in, but the key couldn’t be created: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angemeldet, aber der Key ließ sich nicht anlegen: %@"
+          }
+        }
+      }
+    },
+    "Skip": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringen"
+          }
+        }
+      }
+    },
+    "Small": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klein"
+          }
+        }
+      }
+    },
+    "Small videos are converted by the server and play everywhere.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kleine Videos wandelt der Server um; sie spielen überall."
+          }
+        }
+      }
+    },
+    "Smart Albums": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smart Alben"
+          }
+        }
+      }
+    },
+    "Smart albums appear here only once they are mirrored to the server from the Mac. Without mirroring they stay local on the Mac.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smart Alben erscheinen hier erst, wenn sie am Mac auf den Server gespiegelt sind. Ohne Spiegelung bleiben sie lokal auf dem Mac."
+          }
+        }
+      }
+    },
+    "Something Went Wrong": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hat nicht geklappt"
+          }
+        }
+      }
+    },
+    "Start Slideshow": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diashow starten"
+          }
+        }
+      }
+    },
+    "Start a slideshow on AirPlay — your phone becomes the remote.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starte eine Diashow per AirPlay — dein Telefon wird zur Fernbedienung."
+          }
+        }
+      }
+    },
+    "Start a slideshow or a video on your iPhone.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starte auf dem iPhone eine Diashow oder ein Video."
+          }
+        }
+      }
+    },
+    "Status": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zustand"
+          }
+        }
+      }
+    },
+    "Step 1 of 2": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schritt 1 von 2"
+          }
+        }
+      }
+    },
+    "Step 2 of 2": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schritt 2 von 2"
+          }
+        }
+      }
+    },
+    "Stop Playback": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiedergabe beenden"
+          }
+        }
+      }
+    },
+    "Tap the star on a photo to find it here.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tippe bei einem Foto auf den Stern, dann findest du es hier."
+          }
+        }
+      }
+    },
+    "The address you open Immich with in the browser.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Adresse, mit der du Immich im Browser öffnest."
+          }
+        }
+      }
+    },
+    "The files stay on this device but can’t be accessed without signing in.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Dateien bleiben auf dem Gerät liegen, sind ohne Anmeldung aber nicht erreichbar."
+          }
+        }
+      }
+    },
+    "The files will be deleted from this device. After signing in again they must be downloaded again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Dateien werden vom Gerät gelöscht. Nach einem erneuten Anmelden müssen sie neu geladen werden."
+          }
+        }
+      }
+    },
+    "The local database could not be opened and was recreated. Albums and photos reload from the server; albums kept offline need to be selected again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die lokale Datenbank ließ sich nicht öffnen und wurde neu angelegt. Alben und Fotos werden vom Server neu geladen; offline gehaltene Alben müssen erneut ausgewählt werden."
+          }
+        }
+      }
+    },
+    "The photo moves to the server’s trash and can be restored there. Nothing is permanently deleted here.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Foto wandert in den Papierkorb des Servers und lässt sich dort wiederherstellen. Endgültig gelöscht wird hier nichts."
+          }
+        }
+      }
+    },
+    "The server address and API key for %@ will be removed from this device.\n\nAlbums and photos will be removed from the local cache; the app reloads them the next time you sign in.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server-Adresse und API-Schlüssel für %@ werden von diesem Gerät gelöscht.\n\nAlben und Fotos werden aus dem lokalen Zwischenspeicher entfernt; beim nächsten Anmelden lädt die App sie neu."
+          }
+        }
+      }
+    },
+    "The server doesn’t accept this API key.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server akzeptiert diesen API-Key nicht."
+          }
+        }
+      }
+    },
+    "The server has no albums yet.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server kennt bisher keine Alben."
+          }
+        }
+      }
+    },
+    "The server redirects to a login page — proxy logins aren’t supported.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server leitet auf eine Anmeldeseite um – Proxy-Login wird nicht unterstützt."
+          }
+        }
+      }
+    },
+    "The server responded with an error. Please try again later.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server antwortet mit einem Fehler. Bitte später erneut versuchen."
+          }
+        }
+      }
+    },
+    "The server has no photos yet.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Server kennt bisher keine Fotos."
+          }
+        }
+      }
+    },
+    "The slideshow shows photos. It skips videos so it doesn’t stall for minutes.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Diashow zeigt Fotos. Videos lässt sie aus, damit sie nicht minutenlang stehen bleibt."
+          }
+        }
+      }
+    },
+    "There are no photos for this selection.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Für diese Auswahl gibt es keine Fotos."
+          }
+        }
+      }
+    },
+    "There are no still images on this server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unter den Aufnahmen dieses Servers ist kein Standbild."
+          }
+        }
+      }
+    },
+    "There are no videos on this server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unter den Aufnahmen dieses Servers ist kein Video."
+          }
+        }
+      }
+    },
+    "There’s no file for this photo, and the server can’t be reached.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Für dieses Foto liegt keine Datei vor, und der Server ist nicht erreichbar."
+          }
+        }
+      }
+    },
+    "There’s nothing to show in this album.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In diesem Album ist nichts zu zeigen."
+          }
+        }
+      }
+    },
+    "This album is empty.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Album ist leer."
+          }
+        }
+      }
+    },
+    "This album no longer exists on the server, or you no longer have access. Remove it to free up space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Album gibt es auf dem Server nicht mehr, oder du hast keinen Zugriff mehr. Entferne es, um Platz freizugeben."
+          }
+        }
+      }
+    },
+    "This doesn’t look like an Immich server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das sieht nicht nach einem Immich-Server aus."
+          }
+        }
+      }
+    },
+    "This key is missing the permission album.read.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diesem Key fehlt das Recht album.read."
+          }
+        }
+      }
+    },
+    "This tab loads directly from the server and keeps nothing offline. Albums kept offline are under Albums.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Reiter lädt direkt vom Server und hält nichts vorrätig. Offline vorgehaltene Alben findest du unter Alben."
+          }
+        }
+      }
+    },
+    "This video can’t be loaded right now.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Video lässt sich gerade nicht laden."
+          }
+        }
+      }
+    },
+    "This video can’t be played.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Video lässt sich nicht abspielen."
+          }
+        }
+      }
+    },
+    "To sign in again, you’ll need the server address and API key.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zum erneuten Anmelden brauchst du Server-Adresse und API-Schlüssel wieder."
+          }
+        }
+      }
+    },
+    "Try Again": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erneut versuchen"
+          }
+        }
+      }
+    },
+    "Unknown": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unbekannt"
+          }
+        }
+      }
+    },
+    "Use an API key instead": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stattdessen API-Key verwenden"
+          }
+        }
+      }
+    },
+    "Version": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version"
+          }
+        }
+      }
+    },
+    "Video": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video"
+          }
+        }
+      }
+    },
+    "Video, %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video, %@"
+          }
+        }
+      }
+    },
+    "Videos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videos"
+          }
+        }
+      }
+    },
+    "Videos stay in the cloud and play only when you're online.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videos bleiben in der Cloud und spielen nur mit Verbindung."
+          }
+        }
+      }
+    },
+    "View only": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur ansehen"
+          }
+        }
+      }
+    },
+    "View, favorite & delete": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ansehen, Favorit & Löschen"
+          }
+        }
+      }
+    },
+    "Waiting for Wi-Fi.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wartet auf WLAN."
+          }
+        }
+      }
+    },
+    "What Happens": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Was passiert"
+          }
+        }
+      }
+    },
+    "Where’s your server?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wo ist dein Server?"
+          }
+        }
+      }
+    },
+    "Wrong email or password.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E-Mail oder Passwort falsch."
+          }
+        }
+      }
+    },
+    "Years": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jahre"
+          }
+        }
+      }
+    },
+    "Your API key": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dein API-Key"
+          }
+        }
+      }
+    },
+    "Your API key doesn’t allow this, so the button is now hidden. You can add the permission to the key in Immich.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dein API-Key erlaubt das nicht, deshalb ist der Knopf jetzt ausgeblendet. Das Recht kannst du dem Key in Immich hinzufügen."
+          }
+        }
+      }
+    },
+    "Your favorite albums, always with you — even offline.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Lieblingsalben immer dabei — auch ohne Verbindung."
+          }
+        }
+      }
+    },
+    "You’re all set": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alles bereit"
+          }
+        }
+      }
+    },
+    "available offline": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "offline verfügbar"
+          }
+        }
+      }
+    },
+    "complete · %lld photos": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "vollständig · %lld Foto"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "vollständig · %lld Fotos"
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "complete · %lld photo"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "complete · %lld photos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "for Immich": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "für Immich"
+          }
+        }
+      }
+    },
+    "no photos yet": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "noch keine Fotos"
+          }
+        }
+      }
+    },
+    "not set up": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "nicht eingerichtet"
+          }
+        }
+      }
+    },
+    "unknown": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "unbekannt"
+          }
+        }
+      }
+    },
+    "“%@” is no longer kept offline — %@ will be removed from this device.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„%1$@“ wird nicht mehr offline vorgehalten — %2$@ werden vom Gerät entfernt."
+          }
+        }
+      }
+    },
+    "≈ %@": {
+      "comment": "Estimated size, e.g. „≈ 1.2 GB“",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "≈ %@"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

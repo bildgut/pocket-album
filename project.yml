@@ -1,0 +1,307 @@
+name: PocketAlbum
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+  defaultConfig: Debug
+  # .icon (Icon Composer / Liquid Glass) muss als einzelne Datei in die Resources,
+  # sonst entpackt XcodeGen das Package und Xcode erkennt das Icon nicht
+  # (https://github.com/yonaskolb/XcodeGen/issues/1556)
+  #
+  # Es liegt in `Resources/` am Wurzelverzeichnis, nicht unter `Sources/…`:
+  # Beide App-Targets benutzen dieselbe Datei, und `Sources/Shared` scheidet
+  # aus, weil beide Targets diesen Ordner als **Quellen** einsammeln — ein
+  # Icon-Paket landete dort im Compiler statt in den Resources.
+  fileTypes:
+    icon:
+      file: true
+
+packages:
+  Nuke:
+    url: https://github.com/kean/Nuke.git
+    from: "12.0.0"
+
+# YAML-Anker für die beiden Verbotsskripte, die an JEDEM Target hängen
+# müssen, das Sources/Shared kompiliert (jeder App-Target —
+# ImmichShared ist ein reiner Prüf-Target ohne preBuildScripts-Bedarf, da er
+# selbst nur beweist, dass Sources/Shared gegen das iOS-SDK kompiliert).
+# Ein neuer App-Target, der Sources/Shared kompiliert, verlängert einfach
+# `*verbotUserDefaultsStandard, *verbotAppKitInShared` in seiner
+# preBuildScripts-Liste — ohne diesen Anker müsste man beide Skripte
+# wörtlich duplizieren, und ein Fix an einer Kopie bliebe leicht unbemerkt
+# an der anderen aus.
+scriptAnchors:
+  verbotUserDefaultsStandard: &verbotUserDefaultsStandard
+    # `UserDefaults.standard` ist im app-gehosteten Testlauf dieselbe Domain, die
+    # die ausgelieferte App liest — ein Testlauf könnte dort z. B.
+    # `hasCompletedInitialSync` setzen und den echten Erst-Sync überspringen.
+    # `AppEnvironment.defaults` ist außerhalb von Tests exakt `.standard`, es geht
+    # also nichts verloren. Bewusste Ausnahmen: Zeile mit `// erlaubt: standard`
+    # markieren.
+    name: "Verbot: UserDefaults.standard"
+    basedOnDependencyAnalysis: false
+    script: |
+      treffer=$(grep -rn "UserDefaults\.standard" "$SRCROOT/Sources" "$SRCROOT/Tests" \
+        --include=*.swift \
+        | grep -v "AppEnvironment.swift" \
+        | grep -v "// erlaubt: standard" \
+        | grep -v "^[^:]*:[0-9]*:[[:space:]]*//" || true)
+      if [ -n "$treffer" ]; then
+        echo "$treffer" | while IFS=: read -r datei zeile rest; do
+          echo "$datei:$zeile: error: UserDefaults.standard ist verboten — AppEnvironment.defaults verwenden (schützt die echte App-Domain vor Testläufen)"
+        done
+        exit 1
+      fi
+  verbotAppKitInShared: &verbotAppKitInShared
+    # Der geteilte Kern muss gegen das iOS-SDK kompilieren. Ein import AppKit
+    # dort bricht den iOS-Build — dieser Check meldet es sofort bei jedem
+    # App-Build statt erst im iOS-Lauf. `Sources/Shared/PlatformImage.swift`
+    # ist die einzige zulässige Plattformweiche in Sources/Shared — deshalb
+    # ist die Ausnahme an genau diesen Pfad gebunden, nicht an einen
+    # Freitext-Kommentar. Ein Freitext-Filter würde jeden künftigen
+    # `import AppKit` mit demselben Kommentar durchwinken, egal in welcher
+    # Datei — genau das soll dieser Check verhindern.
+    name: "Verbot: AppKit in Sources/Shared"
+    basedOnDependencyAnalysis: false
+    script: |
+      treffer=$(grep -rnE "import AppKit|import Cocoa" "$SRCROOT/Sources/Shared" \
+        --include=*.swift \
+        | grep -v "Sources/Shared/PlatformImage.swift:.*// erlaubt: plattformweiche" \
+        | grep -v "^[^:]*:[0-9]*:[[:space:]]*//" || true)
+      if [ -n "$treffer" ]; then
+        echo "$treffer" | while IFS=: read -r datei zeile rest; do
+          echo "$datei:$zeile: error: AppKit ist in Sources/Shared verboten — plattformeigenen Code in den Quellordner des App-Targets legen"
+        done
+        exit 1
+      fi
+
+targets:
+  # Reiner Prüf-Target: kompiliert Sources/Shared gegen das iOS-SDK und beweist
+  # damit, dass der geteilte Kern plattformneutral ist. Wird von nichts
+  # importiert — deshalb bleibt in Sources/Shared alles `internal`.
+  #
+  # Statische Bibliothek statt Framework, weil hier nur der Compile-Schritt
+  # gebraucht wird — die vollständige Typprüfung über alle Dateien. Ein
+  # Framework müsste zusätzlich linken, und genau der Ld-Schritt scheitert,
+  # wenn zwei Plattform-Targets (macOS ImmichMac, iOS ImmichShared) dasselbe
+  # SwiftPM-Paket (Nuke) referenzieren: Xcode berechnet dann für dieses Target
+  # fehlerhafte `-add_ast_path`-Argumente (sie zeigen auf einen nie gebauten
+  # `Debug`-Ordner ohne Plattform-Suffix statt auf `Debug-iphonesimulator`).
+  # Eine statische Bibliothek archiviert nur Objektdateien und hat keinen
+  # Ld-Schritt, also kann dieser Konflikt gar nicht erst auftreten.
+  ImmichShared:
+    type: library.static
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/Shared
+    dependencies:
+      - package: Nuke
+        product: NukeUI
+    settings:
+      base:
+        SWIFT_VERSION: "5"
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_EMIT_LOC_STRINGS: YES
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+  ImmichPhone:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      # PhotoKit bleibt draussen: Die ausgeschlossenen Dateien gehören zum
+      # Apple-Fotos-Abgleich des Mac-Clients (Import, Löschen, Favoriten), den
+      # die iOS-App nicht hat. Ohne sie linkt das Binary Photos.framework nicht
+      # und braucht keinen NSPhotoLibraryUsageDescription-Text — ein
+      # „wird nicht benutzt"-Text dort ist ein Ablehnungsgrund im App Store.
+      # Neue Dateien mit `import Photos` in Sources/Shared hier ergänzen.
+      - path: Sources/Shared
+        excludes:
+          - Services/AlbumSyncManager.swift
+          - Services/ApplePhotoDeletionService.swift
+          - Services/ApplePhotoDeletionVerifier+Mediathek.swift
+          - Services/ApplePhotoLibraryScope.swift
+          - Services/ApplePhotoResourceHasher.swift
+          - Services/ApplePhotosLibraryWatcher.swift
+          - Services/AppleResourcePicker.swift
+          - Services/FavoritesSyncManager.swift
+          - Services/UploadManager.swift
+          # Bild-Einordnung per FoundationModels gibt es nur am Mac. Außerdem
+          # hat Xcode 27 den Parameter `sampling:` in `samplingMode:` umbenannt;
+          # mit diesen Dateien baut die iOS-App unter Xcode 26 (GitHub-CI) nicht.
+          - Services/FoundationModelsEinordner.swift
+          - Services/InfoBild*.swift
+      - path: Sources/ImmichPhone
+        excludes:
+          - Resources
+          - Info.plist
+          - PrivacyInfo.xcprivacy
+      - path: Sources/ImmichPhone/Resources/Localizable.xcstrings
+        buildPhase: resources
+      # Privacy Manifest (App-Store-Pflicht): kein Tracking, keine erhobenen
+      # Daten (die App spricht nur mit dem Server des Nutzers), dazu die
+      # Gründe für UserDefaults, Datei-Zeitstempel und freien Speicherplatz.
+      # Muss als Ressource im Bundle-Wurzelordner landen.
+      - path: Sources/ImmichPhone/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      # Icon-Composer-Paket. Icon Composer erzeugt daraus je
+      # Plattform die richtige Form, sofern sie in `supported-platforms`
+      # steht — ohne den iOS-Eintrag dort baut das Paket zwar mit, aber die
+      # App bleibt ohne Symbol, und genau so war es bis hierher.
+      - path: Resources/PocketAlbum.icon
+        buildPhase: resources
+    dependencies:
+      - package: Nuke
+        product: NukeUI
+    info:
+      path: Sources/ImmichPhone/Info.plist
+      properties:
+        CFBundleName: Pocket Album
+        CFBundleDisplayName: Pocket Album
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Nur HTTPS/TLS des Systems, keine eigene Kryptografie — erspart die
+        # Exportfrage bei jedem Upload nach App Store Connect.
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations:
+          - en
+          - de
+        CFBundleIconName: PocketAlbum
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          # Bewusst NUR NSAllowsArbitraryLoads: Steht daneben ein spezifischerer
+          # NSAllows*-Schlüssel (etwa NSAllowsLocalNetworking), IGNORIERT ATS
+          # NSAllowsArbitraryLoads komplett — übrig bliebe „nur lokales Netz".
+          # Tailscale-Adressen (100.64/10, CGNAT) zählen dabei nicht als lokal,
+          # darum scheiterte http://100.x.x.x auf dem Mac mit einem ATS-Fehler,
+          # bis der Schlüssel entfernt war (Commit bd97848). Nicht „aufräumen".
+          NSAllowsArbitraryLoads: true
+        NSLocalNetworkUsageDescription: "This app connects to your Immich server on your local network or via VPN."
+        # **Ohne diesen Eintrag verbindet iOS nie eine Zweitbildschirm-Szene.**
+        # Der App-Delegierte allein genügt nicht: `configurationForConnecting`
+        # wird für diese Rolle gar nicht erst gerufen, weil das System die
+        # Sitzung nur aufbaut, wenn die App sie hier anmeldet. Am Gerät
+        # nachgewiesen — vorher spiegelte AirPlay bloss den Telefonbildschirm.
+        #
+        # **Die Rolle des Hauptbildschirms steht bewusst NICHT hier.** Fehlt sie,
+        # baut SwiftUI seine `WindowGroup` weiter selbst auf; trüge man sie ein,
+        # bräuchte sie eine eigene Delegiertenklasse, und genau daran legt man
+        # sich den ersten Bildschirm lahm statt den zweiten zu gewinnen.
+        #
+        # Der Klassenname ist modulqualifiziert, weil `PhoneZweitbildschirm-
+        # SzenenDelegat` reines Swift ist und ohne `@objc` keinen kurzen
+        # Objective-C-Namen hat.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleExternalDisplayNonInteractive:
+              - UISceneConfigurationName: Zweitbildschirm
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).PhoneZweitbildschirmSzenenDelegat
+    # Die zwei Verbotsskripte — aus dem Anker
+    # oben (`scriptAnchors:`), damit beide Stellen synchron bleiben. Ohne
+    # diese hier liefe der iOS-Entwicklungszyklus am Wächter vorbei: Ein
+    # `UserDefaults.standard` oder `import AppKit`, das nur über ImmichPhone
+    # gebaut wird, fiele erst beim nächsten Mac-Build auf.
+    preBuildScripts:
+      - <<: *verbotUserDefaultsStandard
+      - <<: *verbotAppKitInShared
+    # Team ID and bundle ID prefix live in Local.xcconfig (not checked in;
+    # template: Local.xcconfig.example). Only needed for real devices.
+    configFiles:
+      Debug: Local.xcconfig
+      Release: Local.xcconfig
+    settings:
+      base:
+        SWIFT_VERSION: "5"
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).pocketalbum
+        BUNDLE_ID_PREFIX: com.example
+        MARKETING_VERSION: "0.9.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # NO: Mit YES überschreibt Xcode CFBundleName aus der Info.plist mit
+        # PRODUCT_NAME („ImmichPhone"). Alle Schlüssel stehen oben unter `info:`.
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/ImmichPhone/Info.plist
+        # Fuer den Simulator braucht es keine Signierung, fuers echte Geraet
+        # zwingend. Der Wert stand hier auf NO, solange nur der Simulator
+        # bedient wurde — damit scheiterte jeder Geraetebau, bevor er anfing.
+        #
+        # `Automatic` plus Team-ID genuegt fuer die kostenlose Bereitstellung
+        # ueber eine persoenliche Apple-ID: Xcode legt das Profil selbst an
+        # (`xcodebuild -allowProvisioningUpdates`). Die so installierte App
+        # laeuft **sieben Tage**, danach muss sie neu aufgespielt werden — das
+        # ist die Grenze der kostenlosen Variante, nicht ein Fehler.
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_EMIT_LOC_STRINGS: YES
+        # Erster Release nur fürs iPhone (kein iPad-Layout, keine iPad-Screenshots).
+        TARGETED_DEVICE_FAMILY: "1"
+        # Zeigt auf `Resources/PocketAlbum.icon`. Vorher stand hier bewusst
+        # der leere Wert, weil es kein Icon gab.
+        ASSETCATALOG_COMPILER_APPICON_NAME: PocketAlbum
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -O
+
+  # Gegenstück zu ImmichMacTests für den iOS-Client: Tests/ImmichMacTests hängt
+  # am Mac-Target und erreicht Sources/ImmichPhone strukturell nicht. Ohne
+  # diesen Target müsste iOS-eigene Logik nach Sources/Shared wandern, nur um
+  # überhaupt geprüft werden zu können.
+  #
+  # ImmichPhone ist ein Application-Target, deshalb braucht das Test-Bundle
+  # TEST_HOST und BUNDLE_LOADER; beide setzt XcodeGen aus der `target:
+  # ImmichPhone`-Abhängigkeit selbst (verifiziert im generierten Projekt).
+  # CODE_SIGNING_ALLOWED steht hier wie am ImmichPhone-Target auf NO — das
+  # Test-Bundle wird in eine unsignierte Host-App geladen.
+  ImmichPhoneTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/ImmichPhoneTests
+    dependencies:
+      - target: ImmichPhone
+    settings:
+      base:
+        SWIFT_VERSION: "5"
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGNING_ALLOWED: NO
+
+# Geteilte Schemes: lokal legt Xcode sie automatisch unter xcuserdata an, auf
+# einem frischen CI-Runner gibt es die nicht — ohne diese Einträge scheitert
+# `xcodebuild -scheme …` in der GitHub-Action.
+schemes:
+  ImmichShared:
+    build:
+      targets:
+        ImmichShared: all
+    run:
+      config: Debug
+  ImmichPhone:
+    build:
+      targets:
+        ImmichPhone: all
+    run:
+      config: Debug
+  ImmichPhoneTests:
+    build:
+      targets:
+        ImmichPhone: [test]
+        ImmichPhoneTests: [test]
+    test:
+      config: Debug
+      language: en
+      region: US
+      targets:
+        - ImmichPhoneTests

@@ -1,0 +1,44 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : {
+        "linear-gradient" : [ "srgb:1.00000,0.47843,0.34902,1.00000", "srgb:1.00000,0.23922,0.46667,1.00000" ],
+        "orientation" : { "start" : { "x" : 0, "y" : 0 }, "stop" : { "x" : 1, "y" : 1 } }
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : { "solid" : "srgb:0.10588,0.06275,0.14902,1.00000" }
+    }
+  ],
+  "groups" : [
+    {
+      "name" : "Abzüge",
+      "layers" : [
+        { "image-name" : "abzug-gelb.svg", "name" : "abzug-gelb" },
+        { "image-name" : "abzug-tuerkis.svg", "name" : "abzug-tuerkis" }
+      ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.2 }
+    },
+    {
+      "name" : "Tasche",
+      "layers" : [
+        { "image-name" : "naht.svg", "name" : "naht" },
+        {
+          "image-name" : "bund.svg", "name" : "bund",
+          "fill-specializations" : [ { "appearance" : "dark", "value" : { "solid" : "srgb:1.00000,0.41569,0.58431,1.00000" } } ]
+        },
+        {
+          "image-name" : "tasche.svg", "name" : "tasche",
+          "fill-specializations" : [ { "appearance" : "dark", "value" : { "solid" : "srgb:1.00000,0.23922,0.46667,1.00000" } } ]
+        }
+      ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.15 }
+    }
+  ],
+  "supported-platforms" : { "circles" : [ "watchOS" ], "squares" : "shared" }
+}

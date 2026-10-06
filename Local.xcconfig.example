@@ -1,0 +1,4 @@
+// Copy to Local.xcconfig. For the simulator you can leave both values as they are.
+// For a real iPhone: your Apple team ID (e.g. ABCDE12345) and a prefix you own.
+DEVELOPMENT_TEAM =
+BUNDLE_ID_PREFIX = com.example

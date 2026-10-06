@@ -141,7 +141,7 @@ server over the internet.
 
 ## Support and security
 
-Questions and bugs: [GitHub Issues](https://github.com/pocketalbum-app/pocket-album/issues).
+Questions and bugs: [GitHub Issues](https://github.com/bildgut/pocket-album/issues).
 Security problems: please report them privately, see [SECURITY.md](SECURITY.md).
 
 ## License

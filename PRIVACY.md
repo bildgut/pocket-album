@@ -44,4 +44,4 @@ The app is not directed at children and collects no data from anyone.
 
 ## Contact
 
-Questions: [GitHub Issues](https://github.com/pocketalbum-app/pocket-album/issues).
+Questions: [GitHub Issues](https://github.com/bildgut/pocket-album/issues).

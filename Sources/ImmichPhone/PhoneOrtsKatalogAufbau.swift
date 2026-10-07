@@ -32,10 +32,11 @@ enum PhoneOrtsKatalogAufbau {
         apiClient: ImmichAPIClient,
         vorher: PhoneOrtsKatalog?,
         jetzt: Date = Date(),
-        statistikErlaubt: Bool = true
+        statistikErlaubt: Bool = true,
+        geteilteAlben: [String] = PhoneGeteilteAlben.aktuell
     ) async throws -> PhoneOrtsKatalog {
         try await aufbauenMitMeldung(apiClient: apiClient, vorher: vorher, jetzt: jetzt,
-                                     statistikErlaubt: statistikErlaubt).katalog
+                                     statistikErlaubt: statistikErlaubt, geteilteAlben: geteilteAlben).katalog
     }
 
     /// Wie ``aufbauen(apiClient:vorher:jetzt:statistikErlaubt:)``. Ohne das Recht
@@ -46,9 +47,16 @@ enum PhoneOrtsKatalogAufbau {
         apiClient: ImmichAPIClient,
         vorher: PhoneOrtsKatalog?,
         jetzt: Date = Date(),
-        statistikErlaubt: Bool = true
+        statistikErlaubt: Bool = true,
+        geteilteAlben: [String] = PhoneGeteilteAlben.aktuell
     ) async throws -> Ergebnis {
-        let namen = try await apiClient.searchSuggestions(type: "country")
+        let eigeneNamen = try await apiClient.searchSuggestions(type: "country")
+        // Die Vorschlagsliste kennt nur die eigene Bibliothek. Orte aus geteilten Alben
+        // kommen aus deren Fotos; scheitert das, fehlen sie — der Lauf gilt dann als
+        // unvollständig und wird beim nächsten Öffnen wiederholt.
+        let geteilt = await geteilteOrte(geteilteAlben, apiClient: apiClient)
+        let zusatzOrte = geteilt ?? [:]
+        let namen = PhoneGeteilteOrte.vereint(eigeneNamen, zusatzOrte.keys.sorted())
 
         let ergebnisse = await withTaskGroup(of: LandErgebnis.self) { gruppe in
             var gesammelt: [String: LandErgebnis] = [:]
@@ -58,7 +66,11 @@ enum PhoneOrtsKatalogAufbau {
                     gesammelt[fertig.name] = fertig
                     laufend -= 1
                 }
-                gruppe.addTask { await land(name, apiClient: apiClient, zaehlen: statistikErlaubt) }
+                let zusatz = zusatzOrte[name]
+                gruppe.addTask {
+                    await land(name, geteilt: zusatz, geteilteAlben: geteilteAlben,
+                               apiClient: apiClient, zaehlen: statistikErlaubt)
+                }
                 laufend += 1
             }
             for await fertig in gruppe {
@@ -67,7 +79,7 @@ enum PhoneOrtsKatalogAufbau {
             return gesammelt
         }
 
-        var vollstaendig = true
+        var vollstaendig = geteilt != nil
         var laender: [PhoneOrtsLand] = []
         for name in namen {
             if let neu = ergebnisse[name]?.land {
@@ -89,13 +101,37 @@ enum PhoneOrtsKatalogAufbau {
             basis: apiClient.baseURL.absoluteString,
             laender: laender,
             aufgebautAm: vollstaendig ? jetzt : nil,
-            staedteAnzahlen: [:]
+            staedteAnzahlen: [:],
+            geteilteAlben: geteilteAlben
         )
         return Ergebnis(katalog: katalog, statistikAbgelehnt: ergebnisse.values.contains { $0.statistikAbgelehnt })
     }
 
-    private static func land(_ name: String, apiClient: ImmichAPIClient, zaehlen: Bool) async -> LandErgebnis {
-        let filter = PhoneSuchAuswahl.land(name).searchFilter()
+    /// Länder mit Städten und Regionen aus den Fotos geteilter Alben; `nil`, wenn die
+    /// Abfrage scheiterte. Ohne geteilte Alben keine Anfrage.
+    private static func geteilteOrte(
+        _ albumIds: [String], apiClient: ImmichAPIClient
+    ) async -> [String: PhoneGeteilteOrte.Land]? {
+        guard !albumIds.isEmpty else { return [:] }
+        var filter = SearchFilter.visibleLibrary(type: nil)
+        filter.albumIds = .anyOf(albumIds)
+        do {
+            let assets = try await apiClient.searchAllAssets(filter: filter, withExif: true)
+            let orte = PhoneGeteilteOrte.aus(assets)
+            AppLogger.cache.info("Ortskatalog: \(albumIds.count, privacy: .public) geteilte Alben, \(assets.count, privacy: .public) Fotos, \(orte.count, privacy: .public) Länder")
+            return orte
+        } catch {
+            AppLogger.cache.error("Ortskatalog: Orte geteilter Alben gescheitert: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func land(
+        _ name: String, geteilt: PhoneGeteilteOrte.Land?, geteilteAlben: [String],
+        apiClient: ImmichAPIClient, zaehlen: Bool
+    ) async -> LandErgebnis {
+        // Zählung und jüngstes Foto über eigene Bibliothek und geteilte Alben.
+        let filter = PhoneSuchAuswahl.land(name).searchFilter(geteilteAlben: geteilteAlben)
         // Ein 403 auf die Zählung ist kein Ausfall des Landes.
         async let zaehlung = zaehle(filter, apiClient: apiClient, zaehlen: zaehlen)
         do {
@@ -113,8 +149,8 @@ enum PhoneOrtsKatalogAufbau {
                 anzahl: anzahl,
                 zuletzt: erstes?.localDateTime ?? erstes?.fileCreatedAt,
                 titelbildId: erstes?.id,
-                staedte: try await staedte,
-                regionen: try await regionen
+                staedte: PhoneGeteilteOrte.vereint(try await staedte, geteilt?.staedte ?? []),
+                regionen: PhoneGeteilteOrte.vereint(try await regionen, geteilt?.regionen ?? [])
             ), statistikAbgelehnt: abgelehnt)
         } catch {
             AppLogger.cache.error("Ortskatalog: \(name, privacy: .public) gescheitert: \(error.localizedDescription, privacy: .public)")

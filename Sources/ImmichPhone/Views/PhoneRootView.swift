@@ -251,6 +251,10 @@ struct PhoneRootView: View {
     private func reloadAlbumsAndWarmCovers(manager: AlbumManager, apiClient: ImmichAPIClient) async {
         await manager.loadAlbums()
         hasLoadedOnce = true
+        // Für die Suche in „Entdecken": Fotos geteilter Alben findet der Server nur mit
+        // deren IDs (`PhoneGeteilteAlben`). Nach jedem Abgleich, denn ein neu geteiltes
+        // Album kommt genau hier an.
+        PhoneGeteilteAlben.setze(manager.sharedAlbums.map(\.id))
         // Erneut nach dem Serverabgleich: `loadAlbums()` kann neue Alben (und
         // damit neue `OfflinePin`-lose Kacheln) bekannt gemacht haben, die vor
         // dem Aufruf oben noch gar nicht existierten.

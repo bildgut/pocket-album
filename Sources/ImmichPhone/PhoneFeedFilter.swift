@@ -83,7 +83,7 @@ enum PhoneFeedFilter: String, CaseIterable, Identifiable, Sendable {
 
     var leerText: String {
         switch self {
-        case .alle: String(localized: "The server has no photos yet.")
+        case .alle: String(localized: "You have no photos of your own yet. Photos shared with you are under Albums.")
         case .fotos: String(localized: "There are no still images on this server.")
         case .videos: String(localized: "There are no videos on this server.")
         }

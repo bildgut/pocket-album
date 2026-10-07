@@ -39,7 +39,7 @@ struct PhoneFeedFilterTests {
         // die einzige Auskunft und der Satz darunter irreführend.
         let texte = Set(PhoneFeedFilter.allCases.map(\.leerText))
         #expect(texte.count == 3)
-        #expect(PhoneFeedFilter.alle.leerText == "The server has no photos yet.")
+        #expect(PhoneFeedFilter.alle.leerText == "You have no photos of your own yet. Photos shared with you are under Albums.")
         #expect(PhoneFeedFilter.videos.leerText.contains("video"))
     }
 

@@ -2271,12 +2271,12 @@
         }
       }
     },
-    "The server has no photos yet.": {
+    "You have no photos of your own yet. Photos shared with you are under Albums.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Der Server kennt bisher keine Fotos."
+            "value": "Du hast noch keine eigenen Fotos. Fotos, die andere mit dir teilen, findest du unter Alben."
           }
         }
       }

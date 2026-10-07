@@ -44,6 +44,15 @@ struct PhoneOrtsKatalog: Hashable, Sendable, Codable {
     /// Landes, nicht beim Aufbau — und beim Neuaufbau **verworfen**, sonst blieben
     /// die Zahlen für immer auf dem Stand des ersten Öffnens.
     var staedteAnzahlen: [String: [PhoneOrtsChip]] = [:]
+    /// Die geteilten Alben (sortierte IDs), deren Orte im Katalog stecken. Optional,
+    /// weil ältere Katalogdateien das Feld nicht haben — die synthetisierte Dekodierung
+    /// nähme sonst keinen Vorgabewert, sondern scheiterte an der ganzen Datei.
+    var geteilteAlben: [String]?
+
+    /// Ändert sich die Liste der geteilten Alben, ist der Katalog veraltet, egal wie jung.
+    func passt(zuGeteiltenAlben ids: [String]) -> Bool {
+        (geteilteAlben ?? []) == ids
+    }
 
     func istFrisch(jetzt: Date) -> Bool {
         guard let aufgebautAm else { return false }

@@ -148,7 +148,19 @@ struct PhoneSuchAuswahl: Hashable, Sendable, Codable {
     /// ``SearchFilter/visibleLibrary(type:)`` auf — damit sind `visibility` (nur als
     /// Positivliste, sonst 401) und `trashedAt: isNull` (sonst ist der Papierkorb
     /// dabei) **immer** gesetzt.
-    func searchFilter(type: AssetType? = nil) -> SearchFilter {
+    ///
+    /// Jede echte Auswahl sucht zusätzlich in den Alben, die andere mit diesem Konto
+    /// teilen (``SearchFilter/mitGeteiltenAlben(_:)``). Zwei Ausnahmen:
+    /// - ``leer`` ist der Fotos-Reiter — die eigene Zeitleiste, wie in Immich.
+    /// - „Nur Favoriten": Der Favoritenstern eines Fotos gehört seinem Eigentümer.
+    ///   In einem geteilten Album hieße der Filter „was der andere mag".
+    func searchFilter(type: AssetType? = nil, geteilteAlben: [String] = PhoneGeteilteAlben.aktuell) -> SearchFilter {
+        let filter = eigenerFilter(type: type)
+        guard self != .leer, !nurFavoriten else { return filter }
+        return filter.mitGeteiltenAlben(geteilteAlben)
+    }
+
+    private func eigenerFilter(type: AssetType?) -> SearchFilter {
         var filter = SearchFilter.visibleLibrary(type: typ ?? type)
         if let land { filter.country = .equals(land) }
         if let stadt { filter.city = .equals(stadt) }

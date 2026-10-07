@@ -74,6 +74,34 @@ struct SearchFilter: Encodable, Equatable, Sendable {
         if let type { filter.type = .equals(type) }
         return filter
     }
+
+    /// Derselbe Filter über die eigene Bibliothek **und** die Fotos geteilter Alben.
+    ///
+    /// Ohne ``albumIds`` sucht der Server nur in Assets, die dem Konto gehören — ein
+    /// Album, das jemand anderes teilt, bleibt für Suche, Zählung und Orte unsichtbar.
+    /// Mit ``albumIds`` sucht er dagegen unabhängig vom Eigentümer. Beides zusammen
+    /// geht nur als ``or``: ein Zweig für die eigene Bibliothek, einer für die Alben.
+    /// Am Demo-Server am 07.10.2026 gemessen: Das Hauptkonto zählt damit unverändert
+    /// 133 (seine Album-Fotos gehören ihm ohnehin, nichts doppelt), ein Konto mit nur
+    /// einem geteilten Album 50 statt 0; Land- und Stadtfilter der obersten Ebene
+    /// wirken in beide Zweige (Japan 38, Tokyo 2), die Bildsuche nimmt die Form auch.
+    ///
+    /// Ein Zweig darf nicht leer sein (400). Deshalb wandert ``trashedAt`` in beide
+    /// Zweige — die einzige Bedingung, die ohnehin für beide gilt. Steht schon ein
+    /// ``or`` im Filter, bleibt er unverändert: Zweige dürfen nicht verschachtelt werden.
+    func mitGeteiltenAlben(_ albumIds: [String]) -> SearchFilter {
+        guard !albumIds.isEmpty, or == nil else { return self }
+        var filter = self
+        let papierkorb = filter.trashedAt ?? .isNull
+        filter.trashedAt = nil
+        var eigene = SearchFilter()
+        eigene.trashedAt = papierkorb
+        var geteilte = SearchFilter()
+        geteilte.trashedAt = papierkorb
+        geteilte.albumIds = .anyOf(albumIds)
+        filter.or = [eigene, geteilte]
+        return filter
+    }
 }
 
 /// Ein Wert, der auch ausdrücklich JSON-`null` sein darf (`{"eq": null}`).

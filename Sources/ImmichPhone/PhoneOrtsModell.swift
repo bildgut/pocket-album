@@ -71,7 +71,10 @@ final class PhoneOrtsModell {
             await wechsleServer(zu: apiClient)
         }
         guard !offline else { return }
-        if katalog?.istFrisch(jetzt: jetzt) != true {
+        // Auch neu, wenn seit dem Aufbau ein geteiltes Album hinzukam oder wegfiel —
+        // sonst fehlten dessen Orte bis zu einer Viertelstunde.
+        if katalog?.istFrisch(jetzt: jetzt) != true
+            || katalog?.passt(zuGeteiltenAlben: PhoneGeteilteAlben.aktuell) != true {
             await aktualisieren(apiClient: apiClient, jetzt: jetzt)
         }
     }
@@ -262,6 +265,8 @@ final class PhoneOrtsModell {
         feed.leere()
         vergissEinstiege()
         PhoneZuletztGesucht.vergiss()
+        // Die geteilten Alben gehörten dem abgemeldeten Konto.
+        PhoneGeteilteAlben.setze([])
     }
 
     // MARK: - Einstiege (Entdecken)
@@ -349,7 +354,8 @@ final class PhoneOrtsModell {
     nonisolated private static func jahresSpanne(apiClient: ImmichAPIClient) async -> (String?, String?) {
         @Sendable func erstes(_ richtung: SearchOrder.Direction) async -> String? {
             let anfrage = AssetSearchQuery(
-                filter: .visibleLibrary(type: nil),
+                // Mit geteilten Alben: Ein Konto, das nur Geteiltes sieht, hätte sonst gar keine Jahre.
+                filter: SearchFilter.visibleLibrary(type: nil).mitGeteiltenAlben(PhoneGeteilteAlben.aktuell),
                 orderBy: SearchOrder(field: .fileCreatedAt, direction: richtung),
                 size: 1
             )

@@ -82,11 +82,7 @@ struct PhoneAlbumDetailView: View {
     /// Gesetzt, solange das Blatt „Offline speichern“ offen ist.
     @State private var offlineBlattAlbum: Album?
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2)
-    ]
+    private let columns = PhoneRasterSpalten.fotos
 
     private var badge: OfflineBadge { offline.badge(for: album.id) }
 

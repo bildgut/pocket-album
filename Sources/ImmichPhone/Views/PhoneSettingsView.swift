@@ -117,6 +117,11 @@ struct PhoneSettingsView: View {
             }
             .navigationTitle("Settings")
         }
+        // An der Ansicht, nicht an der Listenzeile: Eine Zeile wird beim Reiterwechsel
+        // und beim Drehen neu aufgebaut, ein dort hängendes Cover mit ihr.
+        .fullScreenCover(isPresented: $zeigtVorspann) {
+            OnboardingVorspann(letzterKnopf: OnboardingTexts.fertigKnopf) { zeigtVorspann = false }
+        }
         // Die IDs statt `pins.count` wie am Mac: Wird ein Album freigegeben und
         // gleichzeitig ein anderes gepinnt, bliebe die Zahl gleich und die Zeilen
         // zeigten weiter das alte Album.
@@ -394,9 +399,6 @@ struct PhoneSettingsView: View {
     private var versionAbschnitt: some View {
         Section {
             Button(OnboardingTexts.vorspannErneut) { zeigtVorspann = true }
-                .fullScreenCover(isPresented: $zeigtVorspann) {
-                    OnboardingVorspann(letzterKnopf: OnboardingTexts.fertigKnopf) { zeigtVorspann = false }
-                }
             LabeledContent("Version") {
                 Text(versionText)
                     .font(.callout.monospacedDigit())

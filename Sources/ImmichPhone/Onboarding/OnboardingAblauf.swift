@@ -13,6 +13,7 @@ struct OnboardingAblauf: View {
     var body: some View {
         ZStack {
             OnboardingFarben(scheme).hintergrund.ignoresSafeArea()
+            Group {
             switch modell.schritt {
             case .vorspann:
                 OnboardingVorspann(letzterKnopf: OnboardingTexts.einrichten) {
@@ -35,6 +36,9 @@ struct OnboardingAblauf: View {
                 }
                 .transition(.opacity)
             }
+            }
+            // Auf dem iPad sonst randlos über 820–1180 pt: Kacheln und Knopf würden riesig.
+            .frame(maxWidth: 560)
         }
         .animation(.smooth, value: modell.schritt)
     }

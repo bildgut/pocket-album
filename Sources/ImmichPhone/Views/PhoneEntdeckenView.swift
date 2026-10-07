@@ -15,10 +15,7 @@ struct PhoneEntdeckenView: View {
 
     private var istOffline: Bool { connection.state.isOffline }
 
-    private let spalten = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    private let spalten = PhoneRasterSpalten.kacheln
 
     var body: some View {
         NavigationStack {

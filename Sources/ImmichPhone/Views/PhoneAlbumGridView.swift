@@ -40,7 +40,7 @@ struct PhoneAlbumGridView: View {
     /// Album, für das gerade das Blatt „Offline speichern“ offen ist.
     @State private var offlineBlattAlbum: Album?
 
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let columns = PhoneRasterSpalten.kacheln
 
     private var istLeer: Bool {
         albumManager.albums.isEmpty && albumManager.sharedAlbums.isEmpty

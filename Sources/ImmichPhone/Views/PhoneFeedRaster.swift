@@ -16,12 +16,8 @@ struct PhoneFeedRaster: View {
 
     @State private var praesentierterStartindex: PhoneAssetStartIndex?
 
-    /// Dreispaltig mit 2 pt Abstand, exakt wie `PhoneAlbumDetailView`.
-    private let columns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2)
-    ]
+    /// Auf dem iPhone dreispaltig (auf dem iPad mehr) mit 2 pt Abstand, exakt wie `PhoneAlbumDetailView`.
+    private let columns = PhoneRasterSpalten.fotos
 
     var body: some View {
         VStack {

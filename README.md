@@ -66,7 +66,9 @@ albums with that prefix. You can name an album that way yourself if you like the
 
 ## Install
 
-Pocket Album is not in the App Store yet. Until then, build it yourself (see [Building](#building)).
+**Beta via TestFlight:** [join the public beta](https://testflight.apple.com/join/YW8NumYY) (free, iPhone with iOS 26 or later; you need the TestFlight app from the App Store).
+
+Pocket Album is not in the App Store yet. If you prefer, you can also build it yourself (see [Building](#building)).
 
 ## Requirements
 

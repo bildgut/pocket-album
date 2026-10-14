@@ -8,11 +8,15 @@ enum OfflinePinKind: String, Codable, CaseIterable, Sendable {
     case album
     /// Ein lokales Smart Album (``SmartAlbum``).
     case smartAlbum
+    /// Die Fotos der letzten Tage aus der eigenen Bibliothek (nur iOS,
+    /// ``ZuletztOffline``). Genau ein Vermerk dieser Art, `targetId` fest.
+    case zuletzt
 
     var label: String {
         switch self {
         case .album:      return "Album"
         case .smartAlbum: return "Smart Album"
+        case .zuletzt:    return "Recent Days"
         }
     }
 
@@ -20,6 +24,7 @@ enum OfflinePinKind: String, Codable, CaseIterable, Sendable {
         switch self {
         case .album:      return "rectangle.stack"
         case .smartAlbum: return "wand.and.stars"
+        case .zuletzt:    return "clock.arrow.circlepath"
         }
     }
 }
@@ -75,6 +80,7 @@ final class OfflinePin {
         switch kind {
         case .album:      return "album:\(targetId)"
         case .smartAlbum: return "smart:\(targetId)"
+        case .zuletzt:    return "zuletzt:\(targetId)"
         }
     }
 

@@ -75,6 +75,16 @@ struct PhoneAlbumGridView: View {
         let abschnitte = self.abschnitte
         return NavigationStack {
             ScrollView {
+                // „Letzte N Tage offline“ — auch ohne Netz und unabhängig von der
+                // Suche: Die Kachel ist kein Album, und ohne Verbindung ist sie
+                // genau das, wofür es die Funktion gibt.
+                if suchtext.isEmpty, let zuletzt = offline.zuletzt {
+                    NavigationLink(value: PhoneZuletztZiel()) {
+                        PhoneZuletztKachel(stand: zuletzt)
+                    }
+                    .buttonStyle(.plain)
+                    .padding([.horizontal, .top], 16)
+                }
                 // Nur online und ohne Suchbegriff: Die Favoriten kommen direkt vom
                 // Server, und eine Albumsuche soll nur Alben zeigen.
                 if suchtext.isEmpty, !connection.state.isOffline, connection.apiClient != nil {
@@ -155,6 +165,9 @@ struct PhoneAlbumGridView: View {
             .navigationTitle("Albums")
             .navigationDestination(for: Album.self) { album in
                 PhoneAlbumDetailView(album: album, offline: offline)
+            }
+            .navigationDestination(for: PhoneZuletztZiel.self) { _ in
+                PhoneZuletztView(offline: offline)
             }
             .navigationDestination(for: PhoneFavoritenZiel.self) { _ in
                 if let apiClient = connection.apiClient {

@@ -424,6 +424,8 @@ actor OfflineDownloadManager {
                 }
             case .smartAlbum:
                 applySmartResolution(smartResolutions[pin.targetId], to: pin)
+            case .zuletzt:
+                await resolveZuletztPin(pin, apiClient: apiClient, bgContext: bgContext)
             }
         }
         try? bgContext.save()
@@ -589,6 +591,56 @@ actor OfflineDownloadManager {
             pin.lastError = String(localized: "Couldn't load the album from the server: \(error.localizedDescription)")
             AppLogger.cache.error("OfflineDownloadManager: Auflösung von '\(pin.displayName)' fehlgeschlagen: \(error)")
             return .fehler
+        }
+    }
+
+    /// Löst „Letzte Tage offline“ über die strukturierte Suche auf
+    /// (``ZuletztOffline/filter(tage:jetzt:kalender:)``) und legt neue Assets an.
+    ///
+    /// Bei einem Fehler bleibt die alte Mitgliedschaft stehen — wie beim Album: Eine
+    /// leere Liste ließe das Aufräumen alle Dateien des Fensters löschen, nur weil
+    /// das Telefon gerade kein Netz hat. Bei Stufe „aus“ (Vermerk liegt noch, die
+    /// Einstellung ist schon 0) wird nichts angefasst; den Vermerk räumt die
+    /// Einstellung selbst ab.
+    private func resolveZuletztPin(_ pin: OfflinePin, apiClient: ImmichAPIClient, bgContext: ModelContext) async {
+        guard let filter = ZuletztOffline.filter(tage: ZuletztOffline.tage()) else { return }
+        // Was die Wahl ausschließt („Videos: Keine“), kommt gar nicht erst in die
+        // Mitgliedschaft — sonst zeigte die Kachel Videos, die nie geladen werden,
+        // und ohne Netz blieben genau diese Kacheln leer. Ändert der Nutzer die Wahl,
+        // löst `setzeZuletzt` neu auf.
+        let videosAuch = wahlQuelle?(pin.pinId)?.ziel(istVideo: true) != nil || wahlQuelle == nil
+        do {
+            var ids: [String] = []
+            var cursor: String?
+            for _ in 0..<ZuletztOffline.maxSeiten {
+                let seite = try await apiClient.searchAssets(query: AssetSearchQuery(
+                    filter: filter,
+                    orderBy: SearchOrder(field: .fileCreatedAt, direction: .desc),
+                    cursor: cursor,
+                    size: 1000
+                ))
+                for asset in seite.items ?? [] {
+                    let assetId = asset.id
+                    var descriptor = FetchDescriptor<CachedAsset>(predicate: #Predicate { $0.assetId == assetId })
+                    descriptor.fetchLimit = 1
+                    if let existing = try? bgContext.fetch(descriptor).first {
+                        _ = existing.update(from: asset)
+                    } else {
+                        bgContext.insert(CachedAsset(from: asset))
+                    }
+                    if asset.isVideo && !videosAuch { continue }
+                    ids.append(assetId)
+                }
+                // Ende: nil **oder** leer (siehe `PhonePhotoFeed`).
+                guard let weiter = seite.nextCursor, !weiter.isEmpty else { break }
+                cursor = weiter
+            }
+            pin.assetIds = ids
+            pin.lastResolvedAt = Date()
+            pin.lastError = nil
+        } catch {
+            pin.lastError = String(localized: "Couldn't load recent photos from the server: \(error.localizedDescription)")
+            AppLogger.cache.error("OfflineDownloadManager: Auflösung „Letzte Tage“ fehlgeschlagen: \(error)")
         }
     }
 

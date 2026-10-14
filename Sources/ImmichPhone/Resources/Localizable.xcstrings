@@ -2721,6 +2721,96 @@
           }
         }
       }
+    },
+    "%lld days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Tage"
+          }
+        }
+      }
+    },
+    "Couldn't load recent photos from the server: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die letzten Fotos konnten nicht vom Server geladen werden: %@"
+          }
+        }
+      }
+    },
+    "Last %lld Days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letzte %lld Tage"
+          }
+        }
+      }
+    },
+    "No photos taken in this period yet.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In diesem Zeitraum wurden noch keine Fotos aufgenommen."
+          }
+        }
+      }
+    },
+    "Off": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus"
+          }
+        }
+      }
+    },
+    "Photos you took in the last days stay on this iPhone and are replaced automatically as new ones arrive. Photos from shared albums are not included.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotos der letzten Tage bleiben auf diesem iPhone und werden automatisch durch neue ersetzt. Fotos aus geteilten Alben sind nicht dabei."
+          }
+        }
+      }
+    },
+    "Recent Days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letzte Tage"
+          }
+        }
+      }
+    },
+    "Recent Photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letzte Fotos"
+          }
+        }
+      }
+    },
+    "Offline · photos from the last %lld days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline · Fotos der letzten %lld Tage"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

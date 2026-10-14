@@ -16,6 +16,8 @@ import Observation
 @Observable @MainActor
 final class PhoneOfflineModel {
     private(set) var badges: [String: OfflineBadge] = [:]
+    /// „Letzte Tage offline“: Stufe, Anzahl und Zustand — `nil`, solange aus.
+    private(set) var zuletzt: PhoneZuletztStand?
 
     func badge(for albumId: String) -> OfflineBadge { badges[albumId] ?? .cloud }
 
@@ -25,6 +27,38 @@ final class PhoneOfflineModel {
             neu[pin.targetId] = OfflineBadge.from(pin: pin)
         }
         badges = neu
+
+        let tage = ZuletztOffline.tage()
+        if tage > 0, let pin = OfflinePinStore.pin(kind: .zuletzt, targetId: ZuletztOffline.targetId, in: context) {
+            zuletzt = PhoneZuletztStand(tage: tage, anzahl: pin.assetIds.count, badge: OfflineBadge.from(pin: pin))
+        } else {
+            zuletzt = nil
+        }
+    }
+
+    /// Setzt die Stufe von „Letzte Tage offline“. Bei > 0 wird der eine Vermerk
+    /// angelegt oder neu aufgelöst (`setPinned` startet den Lauf mit `force`, das
+    /// neue Fenster greift sofort; was herausfällt, räumt der Lauf am Ende ab). Bei 0
+    /// wird er aufgehoben wie ein Album. Eine schon getroffene Qualitätswahl bleibt,
+    /// sonst gilt ``ZuletztOffline/vorgabeWahl``.
+    func setzeZuletzt(tage: Int, context: ModelContext, apiClient: ImmichAPIClient,
+                      speicher: OfflineWahlSpeicher = OfflineWahlSpeicher()) {
+        ZuletztOffline.setzeTage(tage)
+        if ZuletztOffline.tage() > 0 {
+            if speicher.wahl(fuer: ZuletztOffline.pinId) == nil {
+                speicher.setze(ZuletztOffline.vorgabeWahl, fuer: ZuletztOffline.pinId, alsLetzte: false)
+            }
+            OfflinePinStore.setPinned(
+                true, kind: .zuletzt, targetId: ZuletztOffline.targetId,
+                displayName: PhoneZuletztStand.titel(tage: tage), assetIds: nil,
+                context: context, apiClient: apiClient
+            )
+        } else {
+            Self.hebeAuf(kind: .zuletzt, targetId: ZuletztOffline.targetId,
+                         displayName: PhoneZuletztStand.titel(tage: 0),
+                         context: context, apiClient: apiClient, speicher: speicher)
+        }
+        refresh(context: context)
     }
 
     /// Nimmt ein Album mit der Wahl aus dem Blatt offline. Die Wahl wird **zuerst**
@@ -73,5 +107,25 @@ final class PhoneOfflineModel {
         )
         speicher.entferne(pinId: pinId)
         OfflineSyncProgress.shared.wartetAufWLAN.remove(pinId)
+        // Wer „Letzte Tage“ in der Offline-Liste entfernt, schaltet die Funktion
+        // ab — sonst legte der nächste Wechsel der Stufe ihn stillschweigend neu an.
+        if kind == .zuletzt { ZuletztOffline.setzeTage(0) }
+    }
+}
+
+/// Was Kachel und Einstellungen über „Letzte Tage offline“ zeigen.
+struct PhoneZuletztStand: Equatable {
+    let tage: Int
+    let anzahl: Int
+    let badge: OfflineBadge
+
+    var titel: String { Self.titel(tage: tage) }
+
+    static func offlineHinweis(tage: Int) -> String {
+        String(localized: "Offline · photos from the last \(tage) days")
+    }
+
+    static func titel(tage: Int) -> String {
+        tage == 0 ? String(localized: "Recent Days") : String(localized: "Last \(tage) Days")
     }
 }

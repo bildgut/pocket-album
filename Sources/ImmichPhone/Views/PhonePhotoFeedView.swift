@@ -31,16 +31,24 @@ struct PhonePhotoFeedView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                PhoneFeedRaster(feed: feed, apiClient: apiClient, istOffline: istOffline)
+            Group {
+                // Ohne Netz und mit „Letzte Tage offline“: die Fotos, die auf dem
+                // Gerät liegen, statt nur „Offline“ — dafür gibt es die Funktion.
+                if istOffline, ZuletztOffline.tage() > 0 {
+                    PhoneZuletztInhalt()
+                } else {
+                    ScrollView {
+                        PhoneFeedRaster(feed: feed, apiClient: apiClient, istOffline: istOffline)
+                    }
+                    .overlay {
+                        if feed.abschnitte.isEmpty {
+                            leerzustand
+                        }
+                    }
+                }
             }
             .navigationTitle("Photos")
             .navigationBarTitleDisplayMode(.inline)
-            .overlay {
-                if feed.abschnitte.isEmpty {
-                    leerzustand
-                }
-            }
             // `safeAreaInset` statt eines Kopfes *im* `ScrollView`: Der
             // Umschalter soll stehen bleiben. Im Raster scrollte er nach oben
             // weg, und tief im Feld käme man nur noch über einen langen Weg
@@ -52,7 +60,18 @@ struct PhonePhotoFeedView: View {
             // Zustand, aus dem er herausführt — „Keine Videos" ohne die
             // Möglichkeit, zurück auf „Alle" zu tippen.
             .safeAreaInset(edge: .top, spacing: 0) {
-                filterUmschalter
+                if istOffline, ZuletztOffline.tage() > 0 {
+                    // Statt des (ohne Netz gesperrten) Umschalters ein Hinweis,
+                    // was hier zu sehen ist — sonst wirkte der Reiter vollständig.
+                    Label(PhoneZuletztStand.offlineHinweis(tage: ZuletztOffline.tage()), systemImage: "airplane")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(.bar)
+                } else {
+                    filterUmschalter
+                }
             }
             .refreshable {
                 await feed.ladeVonVorne(apiClient: apiClient)

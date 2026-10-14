@@ -17,10 +17,13 @@ struct OfflineWahlSpeicher: @unchecked Sendable {
 
     func wahl(fuer pinId: String) -> OfflineWahl? { alle()[pinId] }
 
-    func setze(_ wahl: OfflineWahl, fuer pinId: String) {
+    /// - Parameter alsLetzte: `false` für Vorgaben, die der Nutzer nicht selbst
+    ///   gewählt hat — sonst erbte das nächste Album-Blatt sie.
+    func setze(_ wahl: OfflineWahl, fuer pinId: String, alsLetzte: Bool = true) {
         var neu = alle()
         neu[pinId] = wahl
         schreibe(neu)
+        guard alsLetzte else { return }
         defaults.set(try? JSONEncoder().encode(wahl), forKey: Self.letzteSchluessel)
     }
 

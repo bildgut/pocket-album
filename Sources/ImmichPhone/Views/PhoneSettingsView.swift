@@ -98,6 +98,10 @@ struct PhoneSettingsView: View {
     /// nachdem weitere Alben freigegeben oder neu gepinnt wurden.
     @State private var letzteFreigabe: String?
 
+    /// Stufe und Qualität von „Letzte Tage offline“, beim Erscheinen gelesen.
+    @State private var zuletztTage = ZuletztOffline.tage()
+    @State private var zuletztWahl = OfflineWahlSpeicher().wahl(fuer: ZuletztOffline.pinId) ?? ZuletztOffline.vorgabeWahl
+
     private var zusammenfassung: PhoneStorageSummary {
         PhoneStorageSummary(eintraege: zeilen.map(\.eintrag))
     }
@@ -110,6 +114,7 @@ struct PhoneSettingsView: View {
         NavigationStack {
             List {
                 serverAbschnitt
+                zuletztAbschnitt
                 offlineAbschnitt
                 orteAbschnitt
                 abmeldeAbschnitt
@@ -200,6 +205,56 @@ struct PhoneSettingsView: View {
     private var serverAdresse: String {
         let adresse = connection.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return adresse.isEmpty ? String(localized: "not set up") : adresse
+    }
+
+    // MARK: - Letzte Tage offline
+
+    /// Stufe und Qualität von „Letzte Tage offline“. Jede Änderung geht sofort an
+    /// `PhoneOfflineModel.setzeZuletzt` — der Lauf startet dort mit `force`, und
+    /// was aus dem Fenster fällt, räumt er am Ende ab. Größe und Fortschritt stehen
+    /// darunter in der Offline-Liste, als Zeile wie ein Album.
+    private var zuletztAbschnitt: some View {
+        Section {
+            Picker(selection: $zuletztTage) {
+                ForEach(ZuletztOffline.stufen, id: \.self) { tage in
+                    Text(tage == 0 ? String(localized: "Off") : String(localized: "\(tage) days")).tag(tage)
+                }
+            } label: {
+                Label(String(localized: "Recent Photos"), systemImage: OfflinePinKind.zuletzt.iconName)
+            }
+            if zuletztTage > 0 {
+                Picker(String(localized: "Photos"), selection: $zuletztWahl.fotos) {
+                    Text(String(localized: "Preview")).tag(OfflineWahl.Fotos.vorschau)
+                    Text(String(localized: "Original")).tag(OfflineWahl.Fotos.original)
+                }
+                Picker(String(localized: "Videos"), selection: $zuletztWahl.videos) {
+                    Text(String(localized: "None")).tag(OfflineWahl.Videos.keine)
+                    Text(String(localized: "Small")).tag(OfflineWahl.Videos.klein)
+                    Text(String(localized: "Original")).tag(OfflineWahl.Videos.original)
+                }
+                Toggle(String(localized: "Also over Cellular"), isOn: $zuletztWahl.mobilfunk)
+            }
+        } header: {
+            Text("Keep Offline")
+        } footer: {
+            Text(String(localized: "Photos you took in the last days stay on this iPhone and are replaced automatically as new ones arrive. Photos from shared albums are not included."))
+        }
+        .disabled(connection.apiClient == nil)
+        .onChange(of: zuletztTage) { _, tage in
+            guard let apiClient = connection.apiClient else { return }
+            OfflineWahlSpeicher().setze(zuletztWahl, fuer: ZuletztOffline.pinId, alsLetzte: false)
+            PhoneOfflineModel().setzeZuletzt(tage: tage, context: modelContext, apiClient: apiClient)
+        }
+        .onChange(of: zuletztWahl) { _, wahl in
+            guard let apiClient = connection.apiClient, zuletztTage > 0 else { return }
+            OfflineWahlSpeicher().setze(wahl, fuer: ZuletztOffline.pinId, alsLetzte: false)
+            PhoneOfflineModel().setzeZuletzt(tage: zuletztTage, context: modelContext, apiClient: apiClient)
+        }
+        // Entfernt jemand „Letzte Tage“ in der Offline-Liste, steht die Stufe danach
+        // auf 0 — der Picker muss das sehen.
+        .onChange(of: pins.map(\.pinId)) { _, _ in
+            zuletztTage = ZuletztOffline.tage()
+        }
     }
 
     // MARK: - Offline-Alben

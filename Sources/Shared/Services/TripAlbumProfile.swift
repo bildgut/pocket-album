@@ -116,7 +116,8 @@ struct TripAlbumTimeMatch: Identifiable, Equatable, Sendable {
 
         let tolerance = toleranceDays * 86_400
         return albums.compactMap { album -> TripAlbumTimeMatch? in
-            guard !sharedAlbumIds.contains(album.id),
+            guard !album.isSmartAlbum,
+                  !sharedAlbumIds.contains(album.id),
                   !excludedAlbumIds.contains(album.id),
                   let profile = profiles[album.id],
                   profile.country == country,

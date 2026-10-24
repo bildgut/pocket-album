@@ -20,12 +20,17 @@ struct ImmichPhoneApp: App {
         connection.beiKontoWechsel = {
             await AccountDataPurge.kontoGewechselt(container: PhoneModelContainer.shared)
         }
+        PhoneHintergrundDienst.shared.konfiguriere(connection: connection, container: PhoneModelContainer.shared)
         _connectionManager = State(initialValue: connection)
 
         // Der Lader ist geteilter Code; nur hier bekommt er die Wahl je Album.
         // Ohne diese Zeile lüde auch das Telefon Originale, wie der Mac.
         Task {
             await OfflineDownloadManager.shared.setzeWahlQuelle { OfflineWahlSpeicher().wahl(fuer: $0) }
+            // Ebenso die vom Nutzer gezogene Ladereihenfolge der Seite „Offline“.
+            await OfflineDownloadManager.shared.setzeReihenfolgeQuelle { eintraege in
+                OfflineReihenfolge().sortiert(eintraege, pinId: \.pinId, kind: \.kind, pinnedAt: \.pinnedAt).map(\.pinId)
+            }
         }
         // Am Mac räumt `evictExpired` (über die SyncEngine) abgebrochene Downloads
         // weg; das Telefon startet keine SyncEngine, die `.tmp`-Reste blieben also

@@ -1,6 +1,206 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Loaded in This Order": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In dieser Reihenfolge geladen"
+          }
+        }
+      }
+    },
+    "Sources at the top are on this iPhone first. Drag to change the order.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Was oben steht, ist zuerst auf dem iPhone. Zum Ändern der Reihenfolge ziehen."
+          }
+        }
+      }
+    },
+    "Remove “%@” from this iPhone?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„%@“ vom iPhone entfernen?"
+          }
+        }
+      }
+    },
+    "The photos stay on the server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Fotos bleiben auf dem Server."
+          }
+        }
+      }
+    },
+    "Used by Offline Photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Belegt durch Offline-Fotos"
+          }
+        }
+      }
+    },
+    "Person…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Person …"
+          }
+        }
+      }
+    },
+    "Add": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hinzufügen"
+          }
+        }
+      }
+    },
+    "To keep people offline, the API key needs the “person.read” permission.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Um Personen offline zu speichern, braucht der API-Schlüssel das Recht „person.read“."
+          }
+        }
+      }
+    },
+    "Albums are added from the album itself.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alben fügst du im Album selbst hinzu."
+          }
+        }
+      }
+    },
+    "Favorites, recent days, people and albums you keep on this iPhone.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriten, letzte Tage, Personen und Alben, die du auf dem iPhone behältst."
+          }
+        }
+      }
+    },
+    "%lld sources": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {"stringUnit": {"state": "translated", "value": "%lld Quelle"}},
+              "other": {"stringUnit": {"state": "translated", "value": "%lld Quellen"}}
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {"stringUnit": {"state": "translated", "value": "%lld source"}},
+              "other": {"stringUnit": {"state": "translated", "value": "%lld sources"}}
+            }
+          }
+        }
+      }
+    },
+    "Days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tage"
+          }
+        }
+      }
+    },
+    "Remove from This iPhone": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vom iPhone entfernen"
+          }
+        }
+      }
+    },
+    "Choose Person": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Person wählen"
+          }
+        }
+      }
+    },
+    "Most Photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Häufigkeit"
+          }
+        }
+      }
+    },
+    "already offline": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "bereits offline"
+          }
+        }
+      }
+    },
+    "No people found": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Personen gefunden"
+          }
+        }
+      }
+    },
+    "Couldn't load people: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personen konnten nicht geladen werden: %@"
+          }
+        }
+      }
+    },
+    "Person": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Person"
+          }
+        }
+      }
+    },
     "%@ · %lld albums": {
       "localizations": {
         "de": {
@@ -2361,6 +2561,16 @@
         }
       }
     },
+    "This person no longer exists on the server. Remove it to free up space.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Person gibt es auf dem Server nicht mehr. Entferne sie, um Platz freizugeben."
+          }
+        }
+      }
+    },
     "This doesn’t look like an Immich server.": {
       "localizations": {
         "de": {
@@ -2732,12 +2942,12 @@
         }
       }
     },
-    "Couldn't load recent photos from the server: %@": {
+    "Couldn't load %@ from the server: %@": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Die letzten Fotos konnten nicht vom Server geladen werden: %@"
+            "value": "„%1$@“ konnte nicht vom Server geladen werden: %2$@"
           }
         }
       }

@@ -3,11 +3,19 @@ import Foundation
 final class ImmichAPIClient {
     let baseURL: URL
     let apiKey: String
+    let sessionConfiguration: URLSessionConfiguration
     private let session: URLSession
     /// Session OHNE x-api-key Default-Header für Endpoints mit Session-Auth
     /// (z. B. ``unlockSession(password:sessionToken:)``) — Immich lehnt diese
     /// Calls mit 400 ab, wenn ein API-Key mitgesendet wird.
     private let sessionAuthSession: URLSession
+    /// Eigene Session für Datei-Downloads (Offline-Lader): Auf langen, verlustreichen
+    /// Strecken bleibt eine Datei auch mal länger als 30 s ohne Daten, ohne dass die
+    /// Verbindung tot ist. Die normale `session` behält ihre kurze Frist.
+    private let downloadSession: URLSession
+
+    /// Frist ohne Daten für einen Datei-Download.
+    static let downloadFrist: TimeInterval = 30
 
     /// - Parameter sessionConfiguration: Basis-Configuration für alle URLSessions
     ///   des Clients. Injizierbar für Tests (z. B. mit `protocolClasses`).
@@ -20,12 +28,19 @@ final class ImmichAPIClient {
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
+        self.sessionConfiguration = sessionConfiguration
         self.editedAssets = editedAssets
         self.assetBasePath = baseURL.appending(path: "api/assets")
 
         // URLSession kopiert die Configuration beim Erzeugen — die Session ohne
         // Header zuerst anlegen, bevor die Kopie für die Auth-Session mutiert wird.
         self.sessionAuthSession = URLSession.mitSichererWeiterleitung(sessionConfiguration)
+
+        // Download-Session: ohne Standard-Header (der Key hängt je Anfrage in
+        // `downloadToFile`), nur die Frist ist länger.
+        let downloadConfig = sessionConfiguration.copy() as! URLSessionConfiguration
+        downloadConfig.timeoutIntervalForRequest = Self.downloadFrist
+        self.downloadSession = URLSession.mitSichererWeiterleitung(downloadConfig)
 
         let config = sessionConfiguration.copy() as! URLSessionConfiguration
         config.httpAdditionalHeaders = [
@@ -48,6 +63,7 @@ final class ImmichAPIClient {
     deinit {
         session.finishTasksAndInvalidate()
         sessionAuthSession.finishTasksAndInvalidate()
+        downloadSession.finishTasksAndInvalidate()
     }
 
     /// Frist für die kurzen Erreichbarkeitsprüfungen (Ping, Version, Schlüssel).
@@ -686,7 +702,7 @@ final class ImmichAPIClient {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
 
         // Stream to a temp file — zero in-memory buffering of the full body
-        let (tempURL, response) = try await session.download(for: request)
+        let (tempURL, response) = try await downloadSession.download(for: request)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
@@ -720,7 +736,7 @@ final class ImmichAPIClient {
         var request = URLRequest(url: url)
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
 
-        let (tempURL, response) = try await session.download(for: request)
+        let (tempURL, response) = try await downloadSession.download(for: request)
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
             try? FileManager.default.removeItem(at: tempURL)
@@ -747,11 +763,21 @@ final class ImmichAPIClient {
 
     /// Lädt eine beliebige Asset-URL (Vorschau, abspielbare Fassung) direkt auf die
     /// Platte. Liefert den `Content-Type`, aus dem der Aufrufer die Endung bildet.
+    ///
+    /// - Parameter metrik: Bekommt die Messwerte des Versuchs — auch eines
+    ///   gescheiterten, soweit URLSession welche geliefert hat. Nur für die Diagnose
+    ///   des Offline-Laders; ohne sie läuft der Aufruf wie zuvor.
     @discardableResult
-    func downloadToFile(url: URL, destinationURL: URL) async throws -> String? {
+    func downloadToFile(
+        url: URL,
+        destinationURL: URL,
+        metrik: (@Sendable (OfflineTransferMetrik) -> Void)? = nil
+    ) async throws -> String? {
         var request = URLRequest(url: url)
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        let (tempURL, response) = try await session.download(for: request)
+        let messer = metrik == nil ? nil : DownloadMetrikDelegate()
+        defer { if let m = messer?.ergebnis { metrik?(m) } }
+        let (tempURL, response) = try await downloadSession.download(for: request, delegate: messer)
         let http = response as? HTTPURLResponse
         if let http, http.statusCode != 200 {
             try? FileManager.default.removeItem(at: tempURL)
@@ -1328,7 +1354,12 @@ final class ImmichAPIClient {
             ]
             guard let url = components?.url else { throw APIError.invalidResponse }
 
-            let (data, _) = try await session.data(from: url)
+            let (data, antwort) = try await session.data(from: url)
+            // Ohne `person.read` antwortet der Server 403 — vorher endete das als
+            // Dekodierfehler, nicht von einem Netzfehler zu unterscheiden.
+            if let status = (antwort as? HTTPURLResponse)?.statusCode, status == 401 || status == 403 {
+                throw APIError.apiKeyLacksPermission("person.read")
+            }
             let response = try jsonDecoder.decode(PeopleResponse.self, from: data)
             all.append(contentsOf: response.people)
 
@@ -1539,6 +1570,39 @@ final class ImmichAPIClient {
         struct StackResponse: Decodable { let id: String }
         let result = try jsonDecoder.decode(StackResponse.self, from: data)
         return result.id
+    }
+
+    /// Delete a stack by its ID (unstacks the assets, leaves files intact).
+    /// DELETE /api/stacks/{id}
+    func deleteStack(stackId: String) async throws {
+        let url = baseURL.appending(path: "api/stacks/\(stackId)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+
+        let (_, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200...204).contains(statusCode) else {
+            throw APIError.httpError(statusCode)
+        }
+    }
+
+    /// Update the primary asset of a stack.
+    /// PUT /api/stacks/{id} { "primaryAssetId": "..." }
+    func updateStackPrimary(stackId: String, primaryAssetId: String) async throws {
+        let url = baseURL.appending(path: "api/stacks/\(stackId)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        let body: [String: Any] = ["primaryAssetId": primaryAssetId]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (_, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200...204).contains(statusCode) else {
+            throw APIError.httpError(statusCode)
+        }
     }
 
     // MARK: - Asset Mutations

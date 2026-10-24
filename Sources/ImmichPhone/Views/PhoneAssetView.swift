@@ -80,6 +80,7 @@ struct PhoneAssetView: View {
     @State private var laufendeAktion: PhoneEinzelbildAktion?
     @State private var fehlermeldung: String?
     @State private var teilenGegenstand: PhoneTeilenGegenstand?
+    @State private var zeigtInfo = false
 
     init(
         eintraege: [PhoneAlbumGridEintrag],
@@ -234,6 +235,11 @@ struct PhoneAssetView: View {
         .sheet(item: $teilenGegenstand) { gegenstand in
             PhoneTeilenBlatt(url: gegenstand.url)
         }
+        .sheet(isPresented: $zeigtInfo) {
+            if let aktuelleId {
+                PhoneAssetInfoSheet(assetId: aktuelleId)
+            }
+        }
     }
 
     // MARK: - Aktionsleiste
@@ -244,6 +250,14 @@ struct PhoneAssetView: View {
             // sichtbare Kreis, der Abstand zwischen den Kreisen bleibt gleich.
             HStack(spacing: 6) {
                 if let eintrag = aktuellerEintrag {
+                    // Braucht weder Server noch Key-Recht (Cache, sonst Detailabfrage).
+                    leistenknopf(
+                        symbol: "info.circle",
+                        beschriftung: Self.infoText,
+                        aktion: .info
+                    ) {
+                        zeigtInfo = true
+                    }
                     leistenknopf(
                         symbol: "square.and.arrow.up",
                         beschriftung: Self.teilenText,
@@ -497,6 +511,7 @@ struct PhoneAssetView: View {
     // parst Literale als Markdown (siehe `CLAUDE.md`).
     private static let schliessenText = String(localized: "Close")
     private static let teilenText = String(localized: "Share")
+    private static let infoText = String(localized: "Info")
     private static let favoritSetzenText = String(localized: "Add to Favorites")
     private static let favoritEntfernenText = String(localized: "Remove from Favorites")
     private static let loeschenText = String(localized: "Delete")
@@ -518,6 +533,7 @@ struct PhoneAssetView: View {
 /// Welche der drei Aktionen gerade läuft — nur dieser Knopf zeigt den Spinner.
 enum PhoneEinzelbildAktion {
     case teilen
+    case info
     case favorit
     case loeschen
 }

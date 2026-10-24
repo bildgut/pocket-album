@@ -87,7 +87,8 @@ struct TripAlbumOverlap: Identifiable, Equatable, Sendable {
         }
         guard !counts.isEmpty else { return [] }
 
-        let byId = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let nonSmart = albums.filter { !$0.isSmartAlbum }
+        let byId = Dictionary(nonSmart.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         return counts.compactMap { albumId, shared -> TripAlbumOverlap? in
             // Ein Album, das der Index kennt und die Albumliste nicht, ist gerade

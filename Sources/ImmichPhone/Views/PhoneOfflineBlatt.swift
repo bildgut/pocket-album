@@ -61,7 +61,7 @@ struct PhoneOfflineBlatt: View {
                     }
                 }
             }
-            .navigationTitle(modell.album.albumName)
+            .navigationTitle(modell.titel)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -94,7 +94,11 @@ struct PhoneOfflineBlatt: View {
                 ProgressView()
             }
         case .fehlgeschlagen:
-            Text(String(localized: "\(modell.album.assetCount) items"))
+            if let anzahl = modell.bekannteAnzahl {
+                Text(String(localized: "\(anzahl) items"))
+            } else {
+                Text(Self.unbekanntText).foregroundStyle(.secondary)
+            }
         }
     }
 

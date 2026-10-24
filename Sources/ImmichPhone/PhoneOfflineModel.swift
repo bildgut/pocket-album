@@ -18,6 +18,11 @@ final class PhoneOfflineModel {
     private(set) var badges: [String: OfflineBadge] = [:]
     /// „Letzte Tage offline“: Stufe, Anzahl und Zustand — `nil`, solange aus.
     private(set) var zuletzt: PhoneZuletztStand?
+    /// Abzeichen der Favoriten-Kachel; `.cloud`, solange Favoriten nicht offline sind.
+    private(set) var favoritenBadge: OfflineBadge = .cloud
+
+    /// Vorgabe für Favoriten und Personen — wie ``ZuletztOffline/vorgabeWahl``.
+    static let vorgabeWahl = OfflineWahl(fotos: .vorschau, videos: .keine, mobilfunk: false)
 
     func badge(for albumId: String) -> OfflineBadge { badges[albumId] ?? .cloud }
 
@@ -27,6 +32,8 @@ final class PhoneOfflineModel {
             neu[pin.targetId] = OfflineBadge.from(pin: pin)
         }
         badges = neu
+        favoritenBadge = OfflinePinStore.pin(kind: .favoriten, targetId: OfflineQuellenFilter.favoritenTargetId, in: context)
+            .map(OfflineBadge.from(pin:)) ?? .cloud
 
         let tage = ZuletztOffline.tage()
         if tage > 0, let pin = OfflinePinStore.pin(kind: .zuletzt, targetId: ZuletztOffline.targetId, in: context) {
@@ -81,6 +88,53 @@ final class PhoneOfflineModel {
             context: context, apiClient: apiClient
         )
         refresh(context: context)
+    }
+
+    /// Schaltet „Favoriten offline“. Wie bei Alben erst die Wahl, dann der Vermerk:
+    /// `setPinned` startet den Lauf sofort, und der fragt die Wahl ab.
+    func setzeFavoriten(_ an: Bool, wahl: OfflineWahl?, context: ModelContext, apiClient: ImmichAPIClient,
+                        speicher: OfflineWahlSpeicher = OfflineWahlSpeicher()) {
+        let targetId = OfflineQuellenFilter.favoritenTargetId
+        let name = String(localized: "Favorites")
+        if an {
+            let pinId = OfflinePin.pinId(kind: .favoriten, targetId: targetId)
+            speicher.setze(wahl ?? speicher.wahl(fuer: pinId) ?? Self.vorgabeWahl, fuer: pinId)
+            OfflinePinStore.setPinned(true, kind: .favoriten, targetId: targetId, displayName: name,
+                                      assetIds: nil, context: context, apiClient: apiClient)
+        } else {
+            Self.hebeAuf(kind: .favoriten, targetId: targetId, displayName: name,
+                         context: context, apiClient: apiClient, speicher: speicher)
+        }
+        refresh(context: context)
+    }
+
+    /// Nimmt alle Fotos einer Person offline; der Name steht am Vermerk, damit die
+    /// Zeile ohne Netz beschriftet ist.
+    func nimmOffline(person id: String, name: String, wahl: OfflineWahl, context: ModelContext,
+                     apiClient: ImmichAPIClient, speicher: OfflineWahlSpeicher = OfflineWahlSpeicher()) {
+        speicher.setze(wahl, fuer: OfflinePin.pinId(kind: .person, targetId: id))
+        OfflinePinStore.setPinned(true, kind: .person, targetId: id, displayName: name,
+                                  assetIds: nil, context: context, apiClient: apiClient)
+        refresh(context: context)
+    }
+
+    /// Neue Wahl für eine bestehende Quelle (Detailseite der Offline-Seite). Neu
+    /// pinnen stößt einen Lauf mit `force` an, der nachlädt, was die Wahl jetzt
+    /// verlangt; „Letzte Tage“ geht über ``setzeZuletzt`` (löst die Videos neu auf).
+    static func aendereWahl(_ wahl: OfflineWahl, kind: OfflinePinKind, targetId: String, displayName: String,
+                            context: ModelContext, apiClient: ImmichAPIClient,
+                            speicher: OfflineWahlSpeicher = OfflineWahlSpeicher()) {
+        // Anderswo entfernt, während die Detailseite offen war? Dann nicht still
+        // wieder anlegen.
+        guard OfflinePinStore.pin(kind: kind, targetId: targetId, in: context) != nil else { return }
+        let pinId = OfflinePin.pinId(kind: kind, targetId: targetId)
+        speicher.setze(wahl, fuer: pinId, alsLetzte: false)
+        if kind == .zuletzt {
+            PhoneOfflineModel().setzeZuletzt(tage: ZuletztOffline.tage(), context: context, apiClient: apiClient, speicher: speicher)
+        } else {
+            OfflinePinStore.setPinned(true, kind: kind, targetId: targetId, displayName: displayName,
+                                      assetIds: nil, context: context, apiClient: apiClient)
+        }
     }
 
     /// Hebt den Offline-Status auf: Vermerk weg, Dateien werden geräumt, die Wahl

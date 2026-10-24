@@ -133,7 +133,7 @@ final class GridIndexStore: Sendable {
         execOn(writeDB, "PRAGMA cache_size = -8000")  // 8MB write-side cache
 
         // MARK: - Schema Versioning
-        let currentVersion = 10
+        let currentVersion = 11
         let userVersion: Int32 = {
             var stmt: OpaquePointer?
             sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nil)
@@ -171,6 +171,13 @@ final class GridIndexStore: Sendable {
             exec("ALTER TABLE grid_assets ADD COLUMN exifOrientation INTEGER")
         }
 
+        func addStackColumns() {
+            exec("ALTER TABLE grid_assets ADD COLUMN stackId TEXT")
+            exec("ALTER TABLE grid_assets ADD COLUMN isStackChild INTEGER NOT NULL DEFAULT 0")
+            exec("ALTER TABLE grid_assets ADD COLUMN stackBadgeText TEXT")
+            exec("CREATE INDEX IF NOT EXISTS idx_grid_stack_child ON grid_assets(isStackChild) WHERE isStackChild = 1")
+        }
+
         if userVersion >= 6 && userVersion < currentVersion {
             // Ein DROP würde hier 165.000 Zeilen verwerfen und den nächsten Kaltstart
             // über den langsamen SwiftData-Pfad erzwingen — für ein paar Spalten ein
@@ -182,8 +189,13 @@ final class GridIndexStore: Sendable {
                 addChecksumColumn()
                 defaults.set(true, forKey: Self.checksumBackfillPendingKey)
             }
-            addOrientationColumn()
-            defaults.set(true, forKey: Self.orientationBackfillPendingKey)
+            if userVersion <= 9 {
+                addOrientationColumn()
+                defaults.set(true, forKey: Self.orientationBackfillPendingKey)
+            }
+            if userVersion <= 10 {
+                addStackColumns()
+            }
             exec("PRAGMA user_version = \(currentVersion)")
         } else if userVersion < currentVersion {
             AppLogger.app.info("GridIndexStore: migrating from v\(userVersion) to v\(currentVersion)")
@@ -219,8 +231,17 @@ final class GridIndexStore: Sendable {
                 cameraMake TEXT,
                 fileSizeInByte INTEGER,
                 checksum TEXT,
-                exifOrientation INTEGER
+                exifOrientation INTEGER,
+                stackId TEXT,
+                isStackChild INTEGER NOT NULL DEFAULT 0,
+                stackBadgeText TEXT
             )
+        """)
+
+        exec("""
+            CREATE INDEX IF NOT EXISTS idx_grid_stack_child
+            ON grid_assets(isStackChild)
+            WHERE isStackChild = 1
         """)
 
         // Bedient genau die Arbeitsliste der EXIF-Reparatur und schrumpft mit ihrem
@@ -313,7 +334,7 @@ final class GridIndexStore: Sendable {
             let vidSQL = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
-                WHERE type = 'VIDEO' AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+                WHERE type = 'VIDEO' AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
                 ORDER BY fileCreatedAt DESC
             """
             stmt = nil
@@ -330,7 +351,7 @@ final class GridIndexStore: Sendable {
                     SUM(CASE WHEN type = 'VIDEO' THEN 1 ELSE 0 END),
                     MIN(fileCreatedAt), MAX(fileCreatedAt)
                 FROM grid_assets
-                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
             """
             stmt = nil
             if sqlite3_prepare_v2(db, statsSQL, -1, &stmt, nil) == SQLITE_OK {
@@ -350,7 +371,7 @@ final class GridIndexStore: Sendable {
                     SUM(CASE WHEN type = 'VIDEO' THEN 1 ELSE 0 END),
                     MIN(fileCreatedAt), MAX(fileCreatedAt)
                 FROM grid_assets
-                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isFavorite = 1
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isFavorite = 1 AND isStackChild = 0
             """
             stmt = nil
             if sqlite3_prepare_v2(db, favStatsSQL, -1, &stmt, nil) == SQLITE_OK {
@@ -376,7 +397,7 @@ final class GridIndexStore: Sendable {
             let sql = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
-                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
                 ORDER BY fileCreatedAt DESC
             """
 
@@ -404,7 +425,7 @@ final class GridIndexStore: Sendable {
             let sql = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
-                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
                 ORDER BY fileCreatedAt DESC
                 LIMIT ? OFFSET ?
             """
@@ -525,7 +546,7 @@ final class GridIndexStore: Sendable {
         var result: Int?
         readQueue.sync {
             guard let db = readDB else { return }
-            let sql = "SELECT COUNT(*) FROM grid_assets WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0"
+            let sql = "SELECT COUNT(*) FROM grid_assets WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
             defer { sqlite3_finalize(stmt) }
@@ -543,7 +564,7 @@ final class GridIndexStore: Sendable {
         id, type, fileCreatedAt, isFavorite, isArchived, isTrashed, isHidden, \
         duration, thumbhash, width, height, originalFileName, fileModifiedAt, \
         lensModel, cameraModel, city, country, livePhotoVideoId, \
-        latitude, longitude, cameraMake, fileSizeInByte
+        latitude, longitude, cameraMake, fileSizeInByte, stackId, stackBadgeText
         """
 
     // MARK: - Upserts
@@ -567,8 +588,9 @@ final class GridIndexStore: Sendable {
                 INSERT INTO grid_assets
                 (id, type, fileCreatedAt, isFavorite, isArchived, isTrashed, isHidden,
                  duration, thumbhash, width, height, originalFileName, fileModifiedAt, lensModel, cameraModel,
-                 city, country, livePhotoVideoId, latitude, longitude, cameraMake, fileSizeInByte, checksum)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 city, country, livePhotoVideoId, latitude, longitude, cameraMake, fileSizeInByte, checksum,
+                 stackId, isStackChild, stackBadgeText)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     type             = excluded.type,
                     fileCreatedAt    = excluded.fileCreatedAt,
@@ -591,7 +613,10 @@ final class GridIndexStore: Sendable {
                     cameraMake       = excluded.cameraMake,
                     fileSizeInByte   = excluded.fileSizeInByte,
                     -- Polling-Antworten ohne checksum dürfen die Stream-Checksum nicht löschen.
-                    checksum         = COALESCE(excluded.checksum, grid_assets.checksum)
+                    checksum         = COALESCE(excluded.checksum, grid_assets.checksum),
+                    stackId          = COALESCE(excluded.stackId, grid_assets.stackId),
+                    isStackChild     = CASE WHEN excluded.stackId IS NOT NULL THEN excluded.isStackChild ELSE grid_assets.isStackChild END,
+                    stackBadgeText   = COALESCE(excluded.stackBadgeText, grid_assets.stackBadgeText)
             """
 
             var stmt: OpaquePointer?
@@ -628,6 +653,9 @@ final class GridIndexStore: Sendable {
                 bindOptionalText(stmt, 21, asset.exifInfo?.make)
                 bindOptionalInt(stmt, 22, asset.exifInfo?.fileSizeInByte)
                 bindOptionalText(stmt, 23, asset.checksum)
+                bindOptionalText(stmt, 24, asset.stackId)
+                sqlite3_bind_int(stmt, 25, asset.isStackChild ? 1 : 0)
+                bindOptionalText(stmt, 26, asset.stackBadgeText)
 
                 sqlite3_step(stmt)
             }
@@ -756,8 +784,8 @@ final class GridIndexStore: Sendable {
                 INSERT INTO grid_assets
                 (id, type, fileCreatedAt, isFavorite, isArchived, isTrashed, isHidden,
                  duration, thumbhash, width, height, originalFileName, fileModifiedAt, lensModel, cameraModel,
-                 city, country, livePhotoVideoId, checksum)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 city, country, livePhotoVideoId, checksum, stackId)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     type             = excluded.type,
                     fileCreatedAt    = COALESCE(NULLIF(excluded.fileCreatedAt, ''), grid_assets.fileCreatedAt),
@@ -770,7 +798,8 @@ final class GridIndexStore: Sendable {
                     originalFileName = excluded.originalFileName,
                     fileModifiedAt   = COALESCE(NULLIF(excluded.fileModifiedAt, ''), grid_assets.fileModifiedAt),
                     livePhotoVideoId = excluded.livePhotoVideoId,
-                    checksum         = excluded.checksum
+                    checksum         = excluded.checksum,
+                    stackId          = COALESCE(excluded.stackId, grid_assets.stackId)
             """
 
             var stmt: OpaquePointer?
@@ -822,6 +851,7 @@ final class GridIndexStore: Sendable {
                 sqlite3_bind_null(stmt, 17)  // country not in SyncAssetV1
                 bindOptionalText(stmt, 18, asset.livePhotoVideoId)
                 bindText(stmt, 19, asset.checksum)
+                bindOptionalText(stmt, 20, asset.stackId)
 
                 sqlite3_step(stmt)
             }
@@ -1311,6 +1341,174 @@ final class GridIndexStore: Sendable {
         }
         return result
     }
+
+    // MARK: - Stacks
+
+    /// Ermittelt den Badge-Text für einen Stack (z.B. "JPEG + RAW", "HEIC + RAW" oder "3").
+    static func badgeText(for assets: [Asset], primaryId: String) -> String? {
+        guard assets.count >= 2 else { return nil }
+        let rawExts = MIMEType.rawExtensions
+        let hasRaw = assets.contains {
+            rawExts.contains((($0.originalFileName as NSString).pathExtension).lowercased())
+        }
+        let nonRaws = assets.filter {
+            !rawExts.contains((($0.originalFileName as NSString).pathExtension).lowercased())
+        }
+
+        if hasRaw && !nonRaws.isEmpty {
+            let primary = assets.first(where: { $0.id == primaryId }) ?? nonRaws[0]
+            let ext = ((primary.originalFileName as NSString).pathExtension).lowercased()
+            if ext == "heic" || ext == "heif" {
+                return "HEIC + RAW"
+            } else {
+                return "JPEG + RAW"
+            }
+        } else if assets.count > 1 {
+            return "\(assets.count)"
+        }
+        return nil
+    }
+
+    /// Überträgt die Server-Stacks in den SQLite Grid-Index.
+    ///
+    /// Das primäre Asset behält `isStackChild = 0` und erhält bei RAW+JPEG-Paaren
+    /// den Badge-Text (z.B. "JPEG + RAW"). Alle untergeordneten Assets (Children)
+    /// erhalten `isStackChild = 1`, sodass sie aus der Haupt-Timeline / Grid ausgeblendet werden.
+    func applyStacks(_ stacks: [Stack]) {
+        writeQueue.sync {
+            guard let db else { return }
+            exec("BEGIN TRANSACTION")
+
+            // Vorherige Stack-Zuweisungen bereinigen
+            exec("""
+                UPDATE grid_assets
+                SET stackId = NULL, isStackChild = 0, stackBadgeText = NULL
+                WHERE stackId IS NOT NULL OR isStackChild != 0
+            """)
+
+            let sql = """
+                UPDATE grid_assets
+                SET stackId = ?, isStackChild = ?, stackBadgeText = ?
+                WHERE id = ?
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                exec("ROLLBACK")
+                return
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            for stack in stacks {
+                let badge = Self.badgeText(for: stack.assets, primaryId: stack.primaryAssetId)
+                for asset in stack.assets {
+                    let isChild = (asset.id != stack.primaryAssetId)
+                    sqlite3_reset(stmt)
+                    sqlite3_clear_bindings(stmt)
+                    bindText(stmt, 1, stack.id)
+                    sqlite3_bind_int(stmt, 2, isChild ? 1 : 0)
+                    if isChild {
+                        sqlite3_bind_null(stmt, 3)
+                    } else {
+                        bindOptionalText(stmt, 3, badge)
+                    }
+                    bindText(stmt, 4, asset.id)
+                    sqlite3_step(stmt)
+                }
+            }
+
+            exec("COMMIT")
+        }
+    }
+
+    /// Aktualisiert einen einzelnen Stack direkt (z.B. nach Upload eines RAW+JPEG-Paars).
+    func updateStack(primaryId: String, childIds: [String], stackId: String, badgeText: String?) {
+        writeQueue.sync {
+            guard let db else { return }
+            exec("BEGIN TRANSACTION")
+
+            let sql = """
+                UPDATE grid_assets
+                SET stackId = ?, isStackChild = ?, stackBadgeText = ?
+                WHERE id = ?
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                exec("ROLLBACK")
+                return
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            // Primary
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+            bindText(stmt, 1, stackId)
+            sqlite3_bind_int(stmt, 2, 0)
+            bindOptionalText(stmt, 3, badgeText)
+            bindText(stmt, 4, primaryId)
+            sqlite3_step(stmt)
+
+            // Children
+            for childId in childIds {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                bindText(stmt, 1, stackId)
+                sqlite3_bind_int(stmt, 2, 1)
+                sqlite3_bind_null(stmt, 3)
+                bindText(stmt, 4, childId)
+                sqlite3_step(stmt)
+            }
+
+            exec("COMMIT")
+        }
+    }
+
+    /// Lädt alle Assets eines Stacks (Primary zuerst, dann Children).
+    func loadStackAssets(stackId: String) -> [Asset] {
+        readQueue.sync {
+            guard let db = readDB else { return [] }
+            let sql = """
+                SELECT \(Self.selectColumns)
+                FROM grid_assets
+                WHERE stackId = ?
+                ORDER BY isStackChild ASC, fileCreatedAt DESC
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            bindText(stmt, 1, stackId)
+
+            var result: [Asset] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                result.append(assetFromRow(stmt))
+            }
+            return result
+        }
+    }
+
+    /// Lädt alle ungestapelten Assets (stackId IS NULL AND isTrashed = 0), die für
+    /// das Auffinden von RAW+JPEG-Paaren in Frage kommen.
+    func loadUnstackedAssets() -> [Asset] {
+        readQueue.sync {
+            guard let db = readDB else { return [] }
+            let sql = """
+                SELECT \(Self.selectColumns)
+                FROM grid_assets
+                WHERE stackId IS NULL AND isTrashed = 0 AND isHidden = 0
+                ORDER BY fileCreatedAt DESC
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            var result: [Asset] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                result.append(assetFromRow(stmt))
+            }
+            return result
+        }
+    }
+
 
     // MARK: - Einmaliger Nachlauf für die EXIF-Orientierung
 
@@ -2701,6 +2899,206 @@ final class GridIndexStore: Sendable {
 
 
 
+    // MARK: - Apple Photos View Mode Data (Years & Months)
+
+    /// Lädt alle Jahre mit Gesamtzahl und dem besten Cover-Foto direkt aus SQLite.
+    /// Läuft über den gesamten Datenbestand (z. B. 111.000 Fotos) in < 10 ms,
+    /// ohne dass alle Assets in den RAM geladen werden müssen.
+    func loadYearOverview() -> [(year: String, totalCount: Int, coverAsset: Asset)] {
+        var results: [(year: String, totalCount: Int, coverAsset: Asset)] = []
+        readQueue.sync {
+            guard let db = readDB else { return }
+
+            let groupSQL = """
+                SELECT substr(fileCreatedAt, 1, 4) AS yr, count(*) AS total
+                FROM grid_assets
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                GROUP BY yr
+                ORDER BY yr DESC
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, groupSQL, -1, &stmt, nil) == SQLITE_OK else { return }
+            var yearCounts: [(year: String, count: Int)] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let yr = columnText(stmt, 0)
+                let total = Int(sqlite3_column_int(stmt, 1))
+                if yr.count == 4 && yr != "0000" {
+                    yearCounts.append((year: yr, count: total))
+                }
+            }
+            sqlite3_finalize(stmt)
+
+            let coverSQL = """
+                SELECT \(Self.selectColumns)
+                FROM grid_assets
+                WHERE substr(fileCreatedAt, 1, 4) = ?
+                  AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                ORDER BY isFavorite DESC, (latitude IS NOT NULL) DESC, fileCreatedAt DESC
+                LIMIT 1
+            """
+            var coverStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, coverSQL, -1, &coverStmt, nil) == SQLITE_OK {
+                for item in yearCounts {
+                    sqlite3_reset(coverStmt)
+                    bindText(coverStmt, 1, item.year)
+                    if sqlite3_step(coverStmt) == SQLITE_ROW {
+                        let asset = assetFromRow(coverStmt)
+                        results.append((year: item.year, totalCount: item.count, coverAsset: asset))
+                    }
+                }
+                sqlite3_finalize(coverStmt)
+            }
+        }
+        return results
+    }
+
+    /// Lädt alle Monate mit Gesamtzahl und bis zu 12 Top-Kandidaten für die Magazin-Collage.
+    func loadMonthOverview() -> [(monthKey: String, totalCount: Int, candidateAssets: [Asset])] {
+        var results: [(monthKey: String, totalCount: Int, candidateAssets: [Asset])] = []
+        readQueue.sync {
+            guard let db = readDB else { return }
+
+            let groupSQL = """
+                SELECT substr(fileCreatedAt, 1, 7) AS mo, count(*) AS total
+                FROM grid_assets
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                GROUP BY mo
+                ORDER BY mo DESC
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, groupSQL, -1, &stmt, nil) == SQLITE_OK else { return }
+            var monthCounts: [(month: String, count: Int)] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let mo = columnText(stmt, 0)
+                let total = Int(sqlite3_column_int(stmt, 1))
+                if mo.count == 7 {
+                    monthCounts.append((month: mo, count: total))
+                }
+            }
+            sqlite3_finalize(stmt)
+
+            let candSQL = """
+                SELECT \(Self.selectColumns)
+                FROM grid_assets
+                WHERE substr(fileCreatedAt, 1, 7) = ?
+                  AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                ORDER BY isFavorite DESC, (latitude IS NOT NULL) DESC, fileCreatedAt DESC
+                LIMIT 12
+            """
+            var candStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, candSQL, -1, &candStmt, nil) == SQLITE_OK {
+                for item in monthCounts {
+                    sqlite3_reset(candStmt)
+                    bindText(candStmt, 1, item.month)
+                    var cands: [Asset] = []
+                    while sqlite3_step(candStmt) == SQLITE_ROW {
+                        cands.append(assetFromRow(candStmt))
+                    }
+                    results.append((monthKey: item.month, totalCount: item.count, candidateAssets: cands))
+                }
+                sqlite3_finalize(candStmt)
+            }
+        }
+        return results
+    }
+
+    /// Offset des ersten sichtbaren Assets mit fileCreatedAt <= iso in der Timeline (absteigend sortiert).
+    func offsetOfDate(_ iso: String) -> Int? {
+        var offset: Int?
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let sql = """
+                SELECT count(*)
+                FROM grid_assets
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                  AND fileCreatedAt > ?
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, iso)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                offset = Int(sqlite3_column_int64(stmt, 0))
+            }
+        }
+        return offset
+    }
+
+    /// Offset eines sichtbaren Assets anhand seiner ID in der Timeline.
+    func offsetOfAsset(id: String) -> Int? {
+        var offset: Int?
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let sqlDate = "SELECT fileCreatedAt FROM grid_assets WHERE id = ? AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0"
+            var stmtDate: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sqlDate, -1, &stmtDate, nil) == SQLITE_OK else { return }
+            bindText(stmtDate, 1, id)
+            guard sqlite3_step(stmtDate) == SQLITE_ROW else {
+                sqlite3_finalize(stmtDate)
+                return
+            }
+            let iso = columnText(stmtDate, 0)
+            sqlite3_finalize(stmtDate)
+
+            let sql = """
+                SELECT count(*)
+                FROM grid_assets
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                  AND (fileCreatedAt > ? OR (fileCreatedAt = ? AND id > ?))
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, iso)
+            bindText(stmt, 2, iso)
+            bindText(stmt, 3, id)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                offset = Int(sqlite3_column_int64(stmt, 0))
+            }
+        }
+        return offset
+    }
+
+    /// Lädt die Aufnahmen für „An diesem Tag" direkt aus SQLite (MM-dd um das heutige Datum in früheren Jahren).
+    func loadOnThisDay(now: Date = Date()) -> [Asset] {
+        let cal = Calendar.current
+        let thisYear = String(cal.component(.year, from: now))
+        let dates: [String] = (-1...1).compactMap { offset in
+            guard let d = cal.date(byAdding: .day, value: offset, to: now) else { return nil }
+            let m = String(format: "%02d", cal.component(.month, from: d))
+            let day = String(format: "%02d", cal.component(.day, from: d))
+            return "\(m)-\(day)"
+        }
+        guard !dates.isEmpty else { return [] }
+
+        var results: [Asset] = []
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let placeholders = Array(repeating: "?", count: dates.count).joined(separator: ",")
+            let sql = """
+                SELECT \(Self.selectColumns)
+                FROM grid_assets
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                  AND substr(fileCreatedAt, 1, 4) != ?
+                  AND substr(fileCreatedAt, 6, 5) IN (\(placeholders))
+                ORDER BY fileCreatedAt DESC
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+
+            bindText(stmt, 1, thisYear)
+            for (idx, d) in dates.enumerated() {
+                bindText(stmt, Int32(2 + idx), d)
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(assetFromRow(stmt))
+            }
+        }
+        return results
+    }
+
     /// Delete the entire grid index (for full re-sync).
 
     func deleteAll() {
@@ -2825,6 +3223,8 @@ final class GridIndexStore: Sendable {
             ),
             width: columnOptionalInt(stmt, 9),
             height: columnOptionalInt(stmt, 10),
+            stackId: columnOptionalText(stmt, 22),
+            stackBadgeText: columnOptionalText(stmt, 23),
             livePhotoVideoId: columnOptionalText(stmt, 17)
         )
     }

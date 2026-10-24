@@ -53,7 +53,37 @@ struct PhoneOfflineProgressBanner: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
+        }
     }
 
     private static let abbrechenText = String(localized: "Cancel")
+}
+
+/// Bettet den Ladebalken dezent am unteren Rand (`safeAreaInset`) ein,
+/// sobald ein Offline-Download aktiv ist (`OfflineSyncProgress.isActive`).
+@MainActor
+struct PhoneOfflineProgressBannerModifier: ViewModifier {
+    var fortschritt: OfflineSyncProgress = .shared
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .bottom) {
+                if fortschritt.isActive {
+                    PhoneOfflineProgressBanner(fortschritt: fortschritt)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: fortschritt.isActive)
+    }
+}
+
+extension View {
+    /// Heftet den Offline-Ladebalken am unteren Rand dieser Ansicht an,
+    /// sobald `OfflineSyncProgress.isActive` wahr ist.
+    @MainActor
+    func phoneOfflineProgressBanner(fortschritt: OfflineSyncProgress = .shared) -> some View {
+        modifier(PhoneOfflineProgressBannerModifier(fortschritt: fortschritt))
+    }
 }

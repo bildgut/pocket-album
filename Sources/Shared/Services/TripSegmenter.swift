@@ -38,7 +38,8 @@ enum TripSegmenter {
     ///   *vollständig* auf der Liste stehen.
     static func segment(rows: [TripScanRow],
                         parameters: TripParameters,
-                        ignoredAssetIds: Set<String> = []) -> TripScanResult {
+                        ignoredAssetIds: Set<String> = [],
+                        homeLocation: (lat: Double, lon: Double)? = nil) -> TripScanResult {
 
         var partialCount = 0
         var working: [TripScanRow] = []
@@ -79,11 +80,12 @@ enum TripSegmenter {
             }
         }
 
-        // Labels angleichen: `coordinate` heißt `(latitude:longitude:)`, `autoDetectHome`
-        // erwartet `(lat:lon:)`. Die Reihenfolge stimmt, aber Swift verlangt künftig
-        // gleiche Namen — ohne die Umbenennung wäre das später ein Fehler.
-        let home = HighlightScorer.autoDetectHome(
-            from: anchors.compactMap { $0.coordinate.map { (lat: $0.latitude, lon: $0.longitude) } }
+        // Labels angleichen: `coordinate` heißt `(latitude:longitude:)`, `effectiveHome`
+        // erwartet `(lat:lon:date:)`.
+        let home = homeLocation ?? HighlightScorer.effectiveHome(
+            from: anchors.compactMap { row in
+                row.coordinate.map { (lat: $0.latitude, lon: $0.longitude, date: row.timestamp) }
+            }
         )
 
         var segments: [TripSegment] = []

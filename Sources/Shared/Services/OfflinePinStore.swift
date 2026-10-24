@@ -104,7 +104,8 @@ enum OfflinePinStore {
                 await OfflineDownloadManager.shared.syncOfflineAlbums(
                     container: container,
                     apiClient: apiClient,
-                    force: true
+                    force: true,
+                    ausloeser: "Gepinnt"
                 )
             }
         } else {

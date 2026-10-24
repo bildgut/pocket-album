@@ -143,7 +143,133 @@ enum HighlightScorer {
         return min(10.0, log2(km / 30.0 + 1.0) * 1.35)
     }
 
+    // MARK: - Configured & Effective Home Location
+
+    public static let overrideLatKey = "highlight.home.overrideLat"
+    public static let overrideLonKey = "highlight.home.overrideLon"
+
+    /// Liefert die manuell in den Einstellungen gesetzte Heimatadresse, falls vorhanden.
+    static func configuredHomeLocation(defaults: UserDefaults = AppEnvironment.defaults) -> (lat: Double, lon: Double)? {
+        guard defaults.object(forKey: overrideLatKey) != nil,
+              defaults.object(forKey: overrideLonKey) != nil else {
+            return nil
+        }
+        let lat = defaults.double(forKey: overrideLatKey)
+        let lon = defaults.double(forKey: overrideLonKey)
+        guard !lat.isNaN, !lon.isNaN, lat != 0 || lon != 0 else { return nil }
+        return (lat: lat, lon: lon)
+    }
+
+    /// Ermittelt den maßgeblichen Heimatort:
+    /// 1. Manuell gesetzte Adresse aus den Einstellungen (höchste Priorität).
+    /// 2. Zeitbasierte Auto-Erkennung (Monats-Cluster über 0,25°-Zellen).
+    /// 3. Fallback auf rein koordinatenbasierte Häufigkeit.
+    static func effectiveHome(
+        from timedCoordinates: [(lat: Double, lon: Double, date: Date?)],
+        defaults: UserDefaults = AppEnvironment.defaults
+    ) -> (lat: Double, lon: Double)? {
+        if let manual = configuredHomeLocation(defaults: defaults) {
+            return manual
+        }
+        return autoDetectHome(fromTimedCoordinates: timedCoordinates)
+    }
+
     // MARK: - Auto-detect Home Location
+
+    /// Finds the home location based on distinct calendar months in 0.25° grid cells
+    /// across a rolling 3-year window (adapted from immich-retrace).
+    ///
+    /// Requires at least `minDistinctMonths` (default 3) distinct months so that a single long vacation
+    /// (even with thousands of photos) never outweighs the true home.
+    static func autoDetectHome(
+        fromTimedCoordinates items: [(lat: Double, lon: Double, date: Date?)],
+        cellSize: Double = 0.25,
+        minDistinctMonths: Int = 3
+    ) -> (lat: Double, lon: Double)? {
+        let withDates = items.compactMap { item -> (lat: Double, lon: Double, date: Date)? in
+            guard let date = item.date else { return nil }
+            return (item.lat, item.lon, date)
+        }
+        guard !withDates.isEmpty else {
+            return autoDetectHome(from: items.map { ($0.lat, $0.lon) })
+        }
+
+        struct Cell: Hashable { let latIdx: Int; let lonIdx: Int }
+        final class CellAccumulator {
+            var sumLat: Double = 0
+            var sumLon: Double = 0
+            var count: Int = 0
+            var months = Set<Int>() // year * 12 + month
+        }
+
+        var cells: [Cell: CellAccumulator] = [:]
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+
+        for (lat, lon, date) in withDates {
+            let cell = Cell(
+                latIdx: Int((lat / cellSize).rounded()),
+                lonIdx: Int((lon / cellSize).rounded())
+            )
+            let acc: CellAccumulator
+            if let existing = cells[cell] {
+                acc = existing
+            } else {
+                acc = CellAccumulator()
+                cells[cell] = acc
+            }
+            acc.sumLat += lat
+            acc.sumLon += lon
+            acc.count += 1
+
+            let comps = calendar.dateComponents([.year, .month], from: date)
+            if let y = comps.year, let m = comps.month {
+                acc.months.insert(y * 12 + m)
+            }
+        }
+
+        // Distinct months per cell and per year
+        struct CellYearSummary {
+            let acc: CellAccumulator
+            let monthsByYear: [Int: Int] // year -> count of distinct months
+        }
+
+        var allYears = Set<Int>()
+        var summaries: [CellYearSummary] = []
+        for acc in cells.values {
+            var byYear: [Int: Int] = [:]
+            for ym in acc.months {
+                let y = ym / 12
+                byYear[y, default: 0] += 1
+                allYears.insert(y)
+            }
+            summaries.append(CellYearSummary(acc: acc, monthsByYear: byYear))
+        }
+
+        var bestScore = 0
+        var bestAcc: CellAccumulator?
+
+        // Check each year with a rolling window [y-1 ... y+1]
+        for year in allYears {
+            for summary in summaries {
+                let score = (summary.monthsByYear[year - 1] ?? 0)
+                          + (summary.monthsByYear[year] ?? 0)
+                          + (summary.monthsByYear[year + 1] ?? 0)
+                if score > bestScore {
+                    bestScore = score
+                    bestAcc = summary.acc
+                }
+            }
+        }
+
+        if let bestAcc, bestScore >= minDistinctMonths, bestAcc.count > 0 {
+            return (lat: bestAcc.sumLat / Double(bestAcc.count),
+                    lon: bestAcc.sumLon / Double(bestAcc.count))
+        }
+
+        // Fallback: If not enough months to meet the threshold, use raw photo counts
+        return autoDetectHome(from: items.map { ($0.lat, $0.lon) })
+    }
 
     /// Finds the most common 0.5° lat/lon grid cell in `coordinates`.
     /// Returns the centre of that cell as `(lat, lon)`, or `nil` if no data.
@@ -179,14 +305,14 @@ enum HighlightScorer {
                 lon: Double(best.key.lonIdx) * 0.5)
     }
 
-    /// Convenience overload accepting `[Asset]` directly.
+    /// Convenience overload accepting `[Asset]` directly, using timed coordinates when available.
     static func autoDetectHome(from assets: [Asset]) -> (lat: Double, lon: Double)? {
-        let coords = assets.compactMap { a -> (Double, Double)? in
+        let timed = assets.compactMap { a -> (lat: Double, lon: Double, date: Date?)? in
             guard let lat = a.exifInfo?.latitude,
                   let lon = a.exifInfo?.longitude else { return nil }
-            return (lat, lon)
+            return (lat: lat, lon: lon, date: a.createdDate)
         }
-        return autoDetectHome(from: coords)
+        return autoDetectHome(fromTimedCoordinates: timed)
     }
 
     // MARK: - Haversine

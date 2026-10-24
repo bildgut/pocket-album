@@ -77,6 +77,7 @@ struct PhonePhotoFeedView: View {
                 await feed.ladeVonVorne(apiClient: apiClient)
             }
         }
+        .phoneOfflineProgressBanner()
         // `id:` auf der Basis-URL, genau wie `PhoneRootView.task(id:)` für den
         // `AlbumManager`: Ein Serverwechsel wirft die geladenen Seiten weg und
         // holt Seite 1 vom neuen Server. `ladeFallsNoetig` ist ansonsten ein

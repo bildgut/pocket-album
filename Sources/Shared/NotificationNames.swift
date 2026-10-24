@@ -53,6 +53,11 @@ extension Notification.Name {
     /// Trigger ExportSheet for specific asset IDs from anywhere in the app.
     /// userInfo: ["assetIds": [String]]
     static let showExportSheet = Notification.Name("showExportSheet")
+    /// Fordert das Öffnen des RAW-Entwicklers an (z. B. aus dem Stapel-Popover).
+    static let openRawDevelopRequested = Notification.Name("openRawDevelopRequested")
+    /// Startet die interaktive Reisetour im Vollbild über der gesamten App.
+    /// userInfo: ["albumName": String, "assets": [Asset]]
+    static let startTripPlaybackRequested = Notification.Name("startTripPlaybackRequested")
 
     /// Fehlertext aus einer Kontextmenü-Aktion, den das Raster als Banner zeigt
     /// (`userInfo["message"]`). `ContextMenuActions` ist ein AppKit-Singleton ohne

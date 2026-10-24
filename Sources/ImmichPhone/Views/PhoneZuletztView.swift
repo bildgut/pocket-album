@@ -69,10 +69,6 @@ struct PhoneZuletztInhalt: View {
 
     var body: some View {
         ScrollView {
-            if OfflineSyncProgress.shared.isActive {
-                PhoneOfflineProgressBanner(fortschritt: OfflineSyncProgress.shared)
-                    .padding(.horizontal, 16)
-            }
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(Array(eintraege.enumerated()), id: \.element.id) { index, eintrag in
                     Button {

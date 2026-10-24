@@ -724,7 +724,7 @@ final class SmartAlbumMirrorService {
         mirroredAlbumIds: Set<String> = []
     ) async -> Bool {
         do {
-            let serverAlbum = try await apiClient.createAlbum(name: "✦ \(album.name)")
+            let serverAlbum = try await apiClient.createAlbum(name: "\(Album.smartAlbumMirrorPrefix)\(album.name)")
             album.mirrorAlbumId    = serverAlbum.id
             album.mirrorSyncStatus = .idle
             album.mirrorLastError  = nil

@@ -17,6 +17,11 @@ enum PhoneRasterSpalten {
     /// Kachelraster für Alben und Länder (12 pt Abstand).
     static let kacheln = [GridItem(.adaptive(minimum: kachelMinimum), spacing: 12)]
 
+    /// Mindestbreite einer Personenzelle (Gesicht + Name). Auf dem iPhone ergibt das 4 Spalten.
+    static let gesichtMinimum: CGFloat = 76
+    /// Gesichterraster der Personenauswahl (12 pt Abstand).
+    static let gesichter = [GridItem(.adaptive(minimum: gesichtMinimum), spacing: 12)]
+
     /// Wie viele Spalten SwiftUI bei `.adaptive` bildet — für Tests und Rechnungen.
     static func anzahl(breite: CGFloat, minimum: CGFloat, abstand: CGFloat) -> Int {
         guard breite >= minimum else { return 1 }

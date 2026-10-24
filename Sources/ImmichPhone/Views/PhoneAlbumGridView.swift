@@ -89,7 +89,7 @@ struct PhoneAlbumGridView: View {
                 // Server, und eine Albumsuche soll nur Alben zeigen.
                 if suchtext.isEmpty, !connection.state.isOffline, connection.apiClient != nil {
                     NavigationLink(value: PhoneFavoritenZiel()) {
-                        PhoneFavoritenKachel()
+                        PhoneFavoritenKachel(badge: offline.favoritenBadge)
                     }
                     .buttonStyle(.plain)
                     .padding([.horizontal, .top], 16)
@@ -149,19 +149,6 @@ struct PhoneAlbumGridView: View {
                     emptyState
                 }
             }
-            // `safeAreaInset` statt einer Kachel im Rasterrumpf: Der Hinweis
-            // erscheint und verschwindet mit `isActive`, ohne dass die
-            // Kacheln darunter dabei nach oben/unten springen — ein
-            // Abschnitt *in* der `LazyVGrid` würde bei jedem Wechsel die
-            // Zeilenumbrüche aller folgenden Kacheln neu berechnen.
-            // **Unten**, über der Reiterleiste: Oben schob der Einschub den
-            // großen Titel „Albums“ aus dem Bild — übrig blieb ein leerer Block
-            // von rund 180 pt über der Leiste (Praxistest).
-            .safeAreaInset(edge: .bottom) {
-                if OfflineSyncProgress.shared.isActive {
-                    offlineProgressBanner
-                }
-            }
             .navigationTitle("Albums")
             .navigationDestination(for: Album.self) { album in
                 PhoneAlbumDetailView(album: album, offline: offline)
@@ -202,6 +189,7 @@ struct PhoneAlbumGridView: View {
                 }
             }
         }
+        .phoneOfflineProgressBanner()
     }
 
     @ViewBuilder
@@ -227,12 +215,6 @@ struct PhoneAlbumGridView: View {
                 }
             }
         }
-    }
-
-    /// Der laufende Offline-Durchgang am Rasterkopf. Dieselbe Ansicht benutzt
-    /// das Albumdetail — siehe `PhoneOfflineProgressBanner`.
-    private var offlineProgressBanner: some View {
-        PhoneOfflineProgressBanner(fortschritt: OfflineSyncProgress.shared)
     }
 
     private func coverURL(for album: Album) -> URL? {

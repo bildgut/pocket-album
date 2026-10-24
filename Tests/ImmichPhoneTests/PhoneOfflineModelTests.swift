@@ -156,4 +156,59 @@ struct PhoneOfflineModelTests {
         #expect(!OfflineSyncProgress.shared.wartetAufWLAN.contains(pinId))
         #expect(!OfflinePinStore.allPins(in: ctx).contains { $0.targetId == "a-9" })
     }
+
+    @Test("Favoriten einschalten speichert die Vorgabe-Wahl und legt den Vermerk an")
+    func setzeFavoritenSpeichertWahlVorPin() throws {
+        let ctx = try makeContext()
+        let speicher = OfflineWahlSpeicher(defaults: UserDefaults(suiteName: "PhoneOfflineModelTests-\(UUID().uuidString)")!)
+        let model = PhoneOfflineModel()
+
+        model.setzeFavoriten(true, wahl: nil, context: ctx,
+                             apiClient: OrteMockURLProtocol.client(host: "nie.test"), speicher: speicher)
+
+        #expect(OfflinePinStore.pin(kind: .favoriten, targetId: "eigene", in: ctx) != nil)
+        #expect(speicher.wahl(fuer: "favoriten:eigene") == PhoneOfflineModel.vorgabeWahl)
+    }
+
+    @Test("Favoriten ausschalten räumt Vermerk, Wahl und WLAN-Marke")
+    func favoritenAusWaehrendLauf() throws {
+        let ctx = try makeContext()
+        let speicher = OfflineWahlSpeicher(defaults: UserDefaults(suiteName: "PhoneOfflineModelTests-\(UUID().uuidString)")!)
+        let model = PhoneOfflineModel()
+        let client = OrteMockURLProtocol.client(host: "nie.test")
+        model.setzeFavoriten(true, wahl: nil, context: ctx, apiClient: client, speicher: speicher)
+        OfflineSyncProgress.shared.wartetAufWLAN.insert("favoriten:eigene")
+
+        model.setzeFavoriten(false, wahl: nil, context: ctx, apiClient: client, speicher: speicher)
+
+        #expect(OfflinePinStore.pin(kind: .favoriten, targetId: "eigene", in: ctx) == nil)
+        #expect(speicher.wahl(fuer: "favoriten:eigene") == nil)
+        #expect(!OfflineSyncProgress.shared.wartetAufWLAN.contains("favoriten:eigene"))
+        #expect(model.favoritenBadge == .cloud)
+    }
+
+    @Test("Person offline nehmen trägt den Namen")
+    func personOffline() throws {
+        let ctx = try makeContext()
+        let speicher = OfflineWahlSpeicher(defaults: UserDefaults(suiteName: "PhoneOfflineModelTests-\(UUID().uuidString)")!)
+        let wahl = OfflineWahl(fotos: .original, videos: .keine, mobilfunk: false)
+
+        PhoneOfflineModel().nimmOffline(person: "p1", name: "Mia", wahl: wahl, context: ctx,
+                                        apiClient: OrteMockURLProtocol.client(host: "nie.test"), speicher: speicher)
+
+        #expect(OfflinePinStore.pin(kind: .person, targetId: "p1", in: ctx)?.displayName == "Mia")
+        #expect(speicher.wahl(fuer: "person:p1") == wahl)
+    }
+
+    @Test("Wahl ändern an einer anderswo entfernten Quelle legt sie nicht neu an")
+    func aendereWahlAufEntfernteQuelle() throws {
+        let ctx = try makeContext()
+        let speicher = OfflineWahlSpeicher(defaults: UserDefaults(suiteName: "PhoneOfflineModelTests-\(UUID().uuidString)")!)
+
+        PhoneOfflineModel.aendereWahl(OfflineWahl(), kind: .person, targetId: "weg", displayName: "Mia",
+                                      context: ctx, apiClient: OrteMockURLProtocol.client(host: "nie.test"), speicher: speicher)
+
+        #expect(OfflinePinStore.pin(kind: .person, targetId: "weg", in: ctx) == nil)
+        #expect(speicher.wahl(fuer: "person:weg") == nil)
+    }
 }

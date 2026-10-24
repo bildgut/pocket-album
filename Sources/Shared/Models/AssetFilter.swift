@@ -16,16 +16,22 @@ struct AssetFilter: Equatable {
     /// Mitgliedschafts-Set mitgeben (siehe `PhotoGridViewModel`).
     var onlyWithoutAlbum: Bool = false
 
+    /// Nur lokal offline verfügbare Fotos/Videos zeigen.
+    var onlyOffline: Bool = false
+
+    /// Nur RAW-Aufnahmen zeigen.
+    var onlyRAW: Bool = false
+
     var isActive: Bool {
-        preset != .all || cameraModel != nil || city != nil || country != nil || onlyWithoutAlbum
+        preset != .all || cameraModel != nil || city != nil || country != nil || onlyWithoutAlbum || onlyOffline || onlyRAW
     }
 
-    /// - Parameter assetIdsInAnyAlbum: Asset-IDs, die in mindestens einem Album stehen
-    ///   (aus ``AlbumMembershipStore/assetIdsInAnyAlbum(excludingAlbumIds:)``). Nur für
-    ///   `onlyWithoutAlbum` nötig. Der Aufrufer stellt sicher, dass der Index alle Alben
-    ///   abdeckt, bevor er den Filter setzt — ein Teilbestand ließe hier Fotos
-    ///   auftauchen, die sehr wohl in einem Album stehen.
-    func apply(to assets: [Asset], assetIdsInAnyAlbum: Set<String> = []) -> [Asset] {
+    /// - Parameters:
+    ///   - assetIdsInAnyAlbum: Asset-IDs, die in mindestens einem Album stehen
+    ///     (aus ``AlbumMembershipStore/assetIdsInAnyAlbum(excludingAlbumIds:)``). Nur für
+    ///     `onlyWithoutAlbum` nötig.
+    ///   - cachedOfflineAssetIds: Asset-IDs, die lokal offline gespeichert sind.
+    func apply(to assets: [Asset], assetIdsInAnyAlbum: Set<String> = [], cachedOfflineAssetIds: Set<String> = []) -> [Asset] {
         // Single-pass: combine all predicates to avoid intermediate array copies
         guard isActive else { return assets }
 
@@ -44,6 +50,8 @@ struct AssetFilter: Equatable {
             if let city, asset.exifInfo?.city != city { return false }
             if let country, asset.exifInfo?.country != country { return false }
             if onlyWithoutAlbum, assetIdsInAnyAlbum.contains(asset.id) { return false }
+            if onlyOffline, !cachedOfflineAssetIds.contains(asset.id) { return false }
+            if onlyRAW, !MediaType.isRawFile(fileName: asset.originalFileName, path: asset.originalPath) { return false }
             return true
         }
     }

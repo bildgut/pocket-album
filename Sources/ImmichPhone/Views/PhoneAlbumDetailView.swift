@@ -120,12 +120,6 @@ struct PhoneAlbumDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 header
-                // Bis hierher zeigte das Detail einen laufenden Durchgang gar
-                // nicht an — wer *hier* ein Album offline nahm, sah nichts,
-                // obwohl im Hintergrund Dateien liefen.
-                if OfflineSyncProgress.shared.isActive {
-                    PhoneOfflineProgressBanner(fortschritt: OfflineSyncProgress.shared)
-                }
                 if zeigtUnvollstaendig {
                     HStack(spacing: 8) {
                         // Immer eine Variable, nie ein Literal — SwiftUI parst
@@ -291,7 +285,8 @@ struct PhoneAlbumDetailView: View {
                 container: container,
                 apiClient: apiClient,
                 force: true,
-                mobilfunkFreigabe: freigabe
+                mobilfunkFreigabe: freigabe,
+                ausloeser: mobilfunkFreigeben ? "Jetzt laden" : "Offline gewählt"
             )
         }
     }

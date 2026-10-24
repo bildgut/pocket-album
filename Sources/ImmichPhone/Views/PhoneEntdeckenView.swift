@@ -39,6 +39,7 @@ struct PhoneEntdeckenView: View {
             )
             .onSubmit(of: .search) { sucheText() }
         }
+        .phoneOfflineProgressBanner()
         // Reagiert auch auf `istOffline`, nicht nur auf die Basis-URL: Sonst
         // bliebe ein Kaltstart offline ohne Katalog beim späteren
         // Online-Wechsel stehen — `apiClient.baseURL` ändert sich dabei nicht,
@@ -366,6 +367,16 @@ struct PhoneEntdeckenView: View {
                     .padding(.vertical, 4)
                     .background(.bar)
             }
+            }
+        }
+        // Genau eine Person gewählt: Knopf „Offline speichern“ für sie. Über einen
+        // unsichtbaren Hintergrund, damit das Raster seine Identität (und
+        // Scrollposition) behält, wenn der Knopf kommt und geht.
+        .background {
+            if modell.auswahl.personen.count == 1, let id = modell.auswahl.personen.first {
+                Color.clear
+                    .offlineQuelleKnopf(kind: .person, targetId: id, titel: modell.personenNamen[id] ?? "")
+                    .id(id)
             }
         }
         // „Zuletzt gesucht“: erst nach einer Weile merken — damit die Trefferzahl da

@@ -11,12 +11,19 @@ enum OfflinePinKind: String, Codable, CaseIterable, Sendable {
     /// Die Fotos der letzten Tage aus der eigenen Bibliothek (nur iOS,
     /// ``ZuletztOffline``). Genau ein Vermerk dieser Art, `targetId` fest.
     case zuletzt
+    /// Alle Favoriten der eigenen Bibliothek (nur iOS). Genau ein Vermerk,
+    /// `targetId` = ``OfflineQuellenFilter/favoritenTargetId``.
+    case favoriten
+    /// Alle Fotos einer Person (nur iOS), `targetId` = Personen-ID.
+    case person
 
     var label: String {
         switch self {
         case .album:      return "Album"
         case .smartAlbum: return "Smart Album"
         case .zuletzt:    return "Recent Days"
+        case .favoriten:  return "Favorites"
+        case .person:     return "Person"
         }
     }
 
@@ -25,6 +32,8 @@ enum OfflinePinKind: String, Codable, CaseIterable, Sendable {
         case .album:      return "rectangle.stack"
         case .smartAlbum: return "wand.and.stars"
         case .zuletzt:    return "clock.arrow.circlepath"
+        case .favoriten:  return "star"
+        case .person:     return "person.crop.circle"
         }
     }
 }
@@ -81,6 +90,8 @@ final class OfflinePin {
         case .album:      return "album:\(targetId)"
         case .smartAlbum: return "smart:\(targetId)"
         case .zuletzt:    return "zuletzt:\(targetId)"
+        case .favoriten:  return "favoriten:\(targetId)"
+        case .person:     return "person:\(targetId)"
         }
     }
 

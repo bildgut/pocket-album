@@ -25,6 +25,11 @@ final class OfflineSyncProgress {
     var failed: Int = 0
     /// Der Nutzer hat Abbrechen gedrückt, der Lauf ebbt gerade aus.
     var isCancelling: Bool = false
+    /// Laufende Anfragen (`assetId` → Beginn) — für die Live-Anzeige im Download-Log:
+    /// Steht der Zähler, zeigt das Alter der ältesten Anfrage, ob sie hängen.
+    var anfragen: [String: Date] = [:]
+    /// Wann zuletzt eine Datei fertig wurde (oder das Laden begann).
+    var letzteDatei: Date?
     /// Vermerke (`pinId`), deren Lauf vor einer Datei anhielt, weil das Netz teuer ist
     /// und das Album nicht über Mobilfunk laden darf. **Nicht** Teil von `reset()`:
     /// Der Zustand muss den Lauf überdauern, sonst sähe die Ansicht ihn nie.
@@ -55,7 +60,7 @@ final class OfflineSyncProgress {
     func cancel() {
         guard isActive, !isCancelling else { return }
         isCancelling = true
-        Task { await OfflineDownloadManager.shared.cancel() }
+        Task { await OfflineDownloadManager.shared.cancel(grund: "Nutzer") }
     }
 
     /// Der Nutzer hat den Vermerk aufgehoben: WLAN-Marke weg und gesperrt, bis er
@@ -70,6 +75,8 @@ final class OfflineSyncProgress {
     }
 
     fileprivate func reset() {
+        anfragen = [:]
+        letzteDatei = nil
         isActive = false
         isCancelling = false
         currentPinName = ""
@@ -151,13 +158,13 @@ actor OfflineDownloadManager {
     private static let cooldownInterval: TimeInterval = 15 * 60
     private static let lastSyncKey = "offlineSync.lastSyncDate"
 
-    /// Wie viele Dateien gleichzeitig geladen werden. Drei ist der Kompromiss zwischen
-    /// „der erste Lauf über ein paar tausend Fotos dauert ewig" und „der Server sowie die
-    /// eigene Leitung bleiben für den Rest der App benutzbar".
-    private static let maxConcurrentDownloads = 3
+    /// Wie viele Dateien gleichzeitig geladen werden. Sechs ist der Kompromiss zwischen
+    /// Durchsatz auf Strecken mit hoher Latenz (z. B. VPN/Tailscale mit ~300 ms RTT) und
+    /// Serverlast.
+    static let maxConcurrentDownloads = 6
     /// Nach so vielen fertigen Dateien wird zwischengespeichert. Nicht nach jeder Datei
     /// (zu viele Schreibvorgänge) und nicht erst am Ende (ein Absturz verlöre alles).
-    private static let persistBatchSize = 25
+    private static let persistBatchSize = 5
 
     private let monitor = NWPathMonitor()
     private var isMetered: Bool = false
@@ -174,8 +181,10 @@ actor OfflineDownloadManager {
         var respectMetered: Bool
         var force: Bool
         var mobilfunkFreigabe: Set<String>
+        var ausloeser: String
 
         mutating func vereinige(mit neu: Auftrag) {
+            if neu.ausloeser != ausloeser { ausloeser += " + " + neu.ausloeser }
             container = neu.container
             apiClient = neu.apiClient
             respectMetered = respectMetered && neu.respectMetered
@@ -209,18 +218,44 @@ actor OfflineDownloadManager {
         wahlQuelle = quelle
     }
 
+    typealias ReihenfolgeEintrag = (pinId: String, kind: OfflinePinKind, pinnedAt: Date)
+
+    /// In welcher Reihenfolge die Vermerke aufgelöst und geladen werden (iOS:
+    /// ``OfflineReihenfolge``). Bekommt Werte statt `OfflinePin`s, weil die nicht
+    /// `Sendable` sind; liefert `pinId`s. Ohne Quelle (Mac) bleibt es bei `pinnedAt`.
+    private var reihenfolgeQuelle: (@Sendable ([ReihenfolgeEintrag]) -> [String])?
+
+    func setzeReihenfolgeQuelle(_ quelle: @escaping @Sendable ([ReihenfolgeEintrag]) -> [String]) {
+        reihenfolgeQuelle = quelle
+    }
+
+    /// `pins` in der Reihenfolge der Quelle; was sie nicht nennt, hängt hinten an.
+    private func geordnet(_ pins: [OfflinePin]) -> [OfflinePin] {
+        guard let reihenfolgeQuelle else { return pins }
+        let ids = reihenfolgeQuelle(pins.map { ($0.pinId, $0.kind, $0.pinnedAt) })
+        let rang = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return pins.enumerated()
+            .sorted { (rang[$0.element.pinId] ?? Int.max, $0.offset) < (rang[$1.element.pinId] ?? Int.max, $1.offset) }
+            .map(\.element)
+    }
+
     /// - Parameter ueberwacheNetz: `false` nur in Tests, die die Netzlage selbst setzen.
     init(ueberwacheNetz: Bool = true) {
         guard ueberwacheNetz else { return }
         monitor.pathUpdateHandler = { [weak self] path in
+            let beschreibung = Self.pfadBeschreibung(path)
             Task { [weak self] in
-                await self?.updateMeteredStatus(path.isExpensive || path.isConstrained)
+                await self?.updateMeteredStatus(path.isExpensive || path.isConstrained, pfad: beschreibung)
             }
         }
         monitor.start(queue: DispatchQueue.global(qos: .background))
     }
 
-    func updateMeteredStatus(_ metered: Bool) {
+    func updateMeteredStatus(_ metered: Bool, pfad: String? = nil) {
+        if let pfad {
+            if pfad != pfadText, isSyncing { netzWechsel += 1 }
+            pfadText = pfad
+        }
         let warTeuer = isMetered
         let ersterRueckruf = !pfadBekannt
         self.isMetered = metered
@@ -229,7 +264,7 @@ actor OfflineDownloadManager {
         // darauf wartete): Wartendes weiterladen.
         if !metered && (warTeuer || (ersterRueckruf && nachholenNachPfad)) {
             nachholenNachPfad = false
-            pruefeNachholen()
+            pruefeNachholen(ausloeser: nachholAusloeser == "Vordergrund" ? "Netzwechsel" : nachholAusloeser)
         }
     }
 
@@ -240,22 +275,23 @@ actor OfflineDownloadManager {
     /// etwa weil die App mitten im Laden beendet wurde), sonst mit Cooldown.
     /// Vor dem ersten Pfad-Rückruf wird nur vorgemerkt: `isMetered` wäre bis
     /// dahin geraten.
-    func nachholen(container: ModelContainer, apiClient: ImmichAPIClient) {
+    func nachholen(container: ModelContainer, apiClient: ImmichAPIClient, ausloeser: String = "Vordergrund") {
         nachholKontext = (container, apiClient)
+        nachholAusloeser = ausloeser
         guard pfadBekannt else {
             nachholenNachPfad = true
             return
         }
-        pruefeNachholen()
+        pruefeNachholen(ausloeser: ausloeser)
     }
 
-    private func pruefeNachholen() {
+    private func pruefeNachholen(ausloeser: String) {
         guard let kontext = nachholKontext else { return }
         Task {
             let wartet = await MainActor.run { !OfflineSyncProgress.shared.wartetAufWLAN.isEmpty }
             let unvollstaendig = wartet || Self.hatUnvollstaendigeVermerke(in: ModelContext(kontext.container))
             await self.syncOfflineAlbums(container: kontext.container, apiClient: kontext.apiClient,
-                                         force: unvollstaendig)
+                                         force: unvollstaendig, ausloeser: ausloeser)
         }
     }
 
@@ -271,8 +307,9 @@ actor OfflineDownloadManager {
 
     /// Bricht den laufenden Durchgang ab. Wirkt wie `Task.isCancelled`, überlebt aber die
     /// `Task.detached`-Grenzen, über die der Lauf aus dem Sync heraus gestartet wird.
-    func cancel() {
+    func cancel(grund: String = "Abbruch") {
         guard isSyncing else { return }
+        if abbruchGrund == nil { abbruchGrund = grund }
         cancelRequested = true
         vorgemerkt = nil
         AppLogger.cache.info("OfflineDownloadManager: Abbruch angefordert")
@@ -292,7 +329,7 @@ actor OfflineDownloadManager {
     /// Store oder Offline-Ablage leert (Abmelden, Kontowechsel): Ein noch
     /// laufender Download schriebe sonst in den geleerten Bestand.
     func abbrechenUndWarten() async {
-        cancel()
+        cancel(grund: "Abmelden/Kontowechsel")
         await warteAufEnde()
     }
 
@@ -319,10 +356,11 @@ actor OfflineDownloadManager {
         apiClient: ImmichAPIClient,
         respectMetered: Bool = true,
         force: Bool = false,
-        mobilfunkFreigabe: Set<String> = []
+        mobilfunkFreigabe: Set<String> = [],
+        ausloeser: String = "Sync"
     ) async {
         let auftrag = Auftrag(container: container, apiClient: apiClient, respectMetered: respectMetered,
-                              force: force, mobilfunkFreigabe: mobilfunkFreigabe)
+                              force: force, mobilfunkFreigabe: mobilfunkFreigabe, ausloeser: ausloeser)
         if isSyncing {
             // Vormerken statt verwerfen; Freigaben und `force` vereinigen sich.
             if vorgemerkt == nil { vorgemerkt = auftrag } else { vorgemerkt?.vereinige(mit: auftrag) }
@@ -333,10 +371,11 @@ actor OfflineDownloadManager {
         var naechster: Auftrag? = auftrag
         while let jetzt = naechster {
             cancelRequested = false
+            abbruchGrund = nil
             verworfenePins = []
             await einLauf(container: jetzt.container, apiClient: jetzt.apiClient,
                           respectMetered: jetzt.respectMetered, force: jetzt.force,
-                          mobilfunkFreigabe: jetzt.mobilfunkFreigabe)
+                          mobilfunkFreigabe: jetzt.mobilfunkFreigabe, ausloeser: jetzt.ausloeser)
             // Direkt abwarten statt über ein losgelassenes `Task`: sonst träfe das
             // Zurücksetzen womöglich erst im nachgeschobenen Lauf ein.
             await updateProgress { $0.reset() }
@@ -356,18 +395,98 @@ actor OfflineDownloadManager {
         apiClient: ImmichAPIClient,
         respectMetered: Bool,
         force: Bool,
-        mobilfunkFreigabe: Set<String>
+        mobilfunkFreigabe: Set<String>,
+        ausloeser: String
     ) async {
+        var eintrag = OfflineLaufEintrag(start: Date())
+        eintrag.netzTeuerBeiStart = isMetered
+        eintrag.erzwungen = force
+        eintrag.ausloeser = ausloeser
+        eintrag.netzStart = pfadText
+        eintrag.geraet = OfflineGeraeteZustand.text()
+        letzterDownloadFehler = nil
+        sammler = OfflineMessSammler()
+        netzWechsel = 0
+        aufloesungsZeiten = [:]
+        ladenBeginn = nil
+        let beginnt = await einLaufKern(container: container, apiClient: apiClient,
+                                        respectMetered: respectMetered, force: force,
+                                        mobilfunkFreigabe: mobilfunkFreigabe, eintrag: &eintrag)
+        // Ein Lauf, den der Cooldown abwies, wäre nur Rauschen im Protokoll.
+        guard beginnt else { return }
+        eintrag.ersterFehler = letzterDownloadFehler
+        OfflineLaufProtokoll().haengeAn(eintrag)
+    }
+
+    /// Der Fehlertext der ersten fehlgeschlagenen Datei des laufenden Durchgangs.
+    private var letzterDownloadFehler: String?
+
+    // Messung für das Lauf-Protokoll (siehe ``OfflineLaufProtokoll``).
+    private var sammler = OfflineMessSammler()
+    private var ladenBeginn: Date?
+    private var netzWechsel = 0
+    /// Beschreibung des aktuellen Netzpfads („WLAN“, „Mobilfunk, teuer“ …).
+    private var pfadText = "?"
+    private var aufloesungsZeiten: [String: Double] = [:]
+    private var abbruchGrund: String?
+    private var nachholAusloeser = "Vordergrund"
+
+    private func nimmMessung(_ messung: OfflineDateiMessung) {
+        let minute = ladenBeginn.map { Int(Date().timeIntervalSince($0) / 60) } ?? 0
+        sammler.nimm(messung, minute: minute)
+    }
+
+    /// Hängt die Messwerte einer Datei über Wiederholungen hinweg zusammen.
+    private final class DateiBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _versuche = 0
+        private var _metrik: OfflineTransferMetrik?
+        func neuerVersuch() { lock.lock(); _versuche += 1; _metrik = nil; lock.unlock() }
+        func setze(_ m: OfflineTransferMetrik) { lock.lock(); _metrik = m; lock.unlock() }
+        var versuche: Int { lock.lock(); defer { lock.unlock() }; return max(1, _versuche) }
+        var metrik: OfflineTransferMetrik? { lock.lock(); defer { lock.unlock() }; return _metrik }
+    }
+
+    static func pfadBeschreibung(_ path: NWPath) -> String {
+        guard path.status == .satisfied else { return "kein Netz" }
+        var art = "sonstiges"
+        if path.usesInterfaceType(.wifi) { art = "WLAN" }
+        else if path.usesInterfaceType(.cellular) { art = "Mobilfunk" }
+        else if path.usesInterfaceType(.wiredEthernet) { art = "Kabel" }
+        var flags: [String] = []
+        if path.isExpensive { flags.append("teuer") }
+        if path.isConstrained { flags.append("eingeschränkt") }
+        return flags.isEmpty ? art : art + " (" + flags.joined(separator: ", ") + ")"
+    }
+
+    private func merkeDownloadFehler(_ fehler: Error) {
+        guard letzterDownloadFehler == nil else { return }
+        // `localizedDescription` verschluckt bei vielen Fehlern das Entscheidende
+        // (siehe `ThumbnailFehlerDrossel`); die Roh-Beschreibung ist länger, aber ehrlich.
+        let roh = (fehler as? URLError).map { "URLError \($0.code.rawValue)" } ?? "\(fehler)"
+        letzterDownloadFehler = String(roh.prefix(120))
+    }
+
+    /// - Returns: `false`, wenn der Cooldown den Lauf abwies, bevor er begann.
+    private func einLaufKern(
+        container: ModelContainer,
+        apiClient: ImmichAPIClient,
+        respectMetered: Bool,
+        force: Bool,
+        mobilfunkFreigabe: Set<String>,
+        eintrag: inout OfflineLaufEintrag
+    ) async -> Bool {
         if !force, let last = lastSyncDate,
            Date().timeIntervalSince(last) < Self.cooldownInterval {
-            return
+            return false
         }
 
         // Mit Wahl-Quelle entscheidet jedes Album selbst (Mobilfunk-Freigabe),
         // geprüft vor jeder Datei. Ohne Quelle (Mac) wie bisher: gar nicht erst anfangen.
         if respectMetered && isMetered && wahlQuelle == nil {
             AppLogger.cache.info("OfflineDownloadManager: Lauf übersprungen — getaktete Verbindung.")
-            return
+            eintrag.ende = .uebersprungenNetz
+            return true
         }
 
         // `isActive` **hier**, nicht erst wenn die Dateiliste steht. Zwischen
@@ -396,12 +515,14 @@ actor OfflineDownloadManager {
         // Alt-Markierungen an Alben übernehmen — einmalig, danach ein No-Op.
         OfflinePinStore.migrateLegacyFlags(in: bgContext)
 
-        let pins = OfflinePinStore.allPins(in: bgContext)
+        let pins = geordnet(OfflinePinStore.allPins(in: bgContext))
         guard !pins.isEmpty else {
             // Ohne Vermerk bleibt das Cooldown-Fenster absichtlich unverbraucht: Sonst
             // blockierte ein Leerlauf genau den Lauf, der nach dem Pinnen etwas zu tun hätte.
-            return
+            eintrag.ende = .keinVermerk
+            return true
         }
+        let aufloesungBeginn = Date()
 
         AppLogger.cache.info("OfflineDownloadManager: Lauf für \(pins.count) Vermerk(e) gestartet.")
         lastSyncDate = Date()
@@ -415,8 +536,11 @@ actor OfflineDownloadManager {
         )
 
         var verschwunden = Set<String>()
+        var personenAufServer: Set<String>?
         for pin in pins {
             guard !shouldStop else { break }
+            let pinBeginn = Date()
+            defer { aufloesungsZeiten[pin.pinId] = Date().timeIntervalSince(pinBeginn) }
             switch pin.kind {
             case .album:
                 if await resolveAlbumPin(pin, apiClient: apiClient, bgContext: bgContext) == .gibtEsNichtMehr {
@@ -426,9 +550,22 @@ actor OfflineDownloadManager {
                 applySmartResolution(smartResolutions[pin.targetId], to: pin)
             case .zuletzt:
                 await resolveZuletztPin(pin, apiClient: apiClient, bgContext: bgContext)
+            case .favoriten, .person:
+                if pin.kind == .person, personenAufServer == nil {
+                    // Einmal je Lauf. Schlägt das fehl, gilt niemand als weg.
+                    personenAufServer = (try? await apiClient.getPeople(withHidden: true)).map { Set($0.map(\.id)) }
+                }
+                if pin.kind == .person, let personenAufServer, !personenAufServer.contains(pin.targetId) {
+                    pin.lastError = Self.personWegText
+                    verschwunden.insert(pin.pinId)
+                    continue
+                }
+                guard let filter = OfflineQuellenFilter.filter(kind: pin.kind, targetId: pin.targetId) else { continue }
+                await resolveSuchPin(pin, filter: filter, apiClient: apiClient, bgContext: bgContext)
             }
         }
         try? bgContext.save()
+        eintrag.aufloesungSek = Date().timeIntervalSince(aufloesungBeginn)
 
         // ── 2. Arbeitsliste bilden ────────────────────────────────────────────
         // Als einfache Werte, nicht als SwiftData-Objekte: nur so lassen sich die
@@ -454,9 +591,29 @@ actor OfflineDownloadManager {
                 work.append((pin, items, wahl?.mobilfunk ?? false))
             }
         }
+        // Dasselbe Foto in zwei Quellen (Favorit *und* bei Mia) stünde sonst in
+        // beiden Listen und würde zweimal geladen. Nur mit Wahl — der Mac bleibt.
+        // Was dabei wegfällt, hält der Nachlauf unten nach: Ob die andere Quelle das
+        // Foto wirklich geladen hat, weiß erst die Platte.
+        var nachzupruefen: [(pin: OfflinePin, mobilfunk: Bool)] = []
+        if wahlQuelle != nil {
+            let bereinigt = Self.entdoppelt(work.map { ($0.items, $0.mobilfunk) })
+            var behalten: [(pin: OfflinePin, items: [OfflineLadeposten], mobilfunk: Bool)] = []
+            for (eintrag, items) in zip(work, bereinigt) {
+                if items.count < eintrag.items.count { nachzupruefen.append((eintrag.pin, eintrag.mobilfunk)) }
+                if !items.isEmpty { behalten.append((eintrag.pin, items, eintrag.mobilfunk)) }
+            }
+            work = behalten
+        }
         // Die eben fertig gewordenen Vermerke sichern — ein Lauf, dessen übrige
         // Vermerke nur auf WLAN warten, erreicht sonst kein `save()` mehr.
         try? bgContext.save()
+
+        eintrag.quellen = work.map {
+            "\($0.pin.displayName): \($0.items.count) Dateien (Auflösung \(OfflineLaufEintrag.sek(aufloesungsZeiten[$0.pin.pinId] ?? 0)))"
+        }
+        let jeFassung = Dictionary(grouping: work.flatMap(\.items), by: { $0.fassung.rawValue }).mapValues(\.count)
+        eintrag.fassungen = OfflineLaufEintrag.zaehlung(jeFassung)
 
         let overallTotal = work.reduce(0) { $0 + $1.items.count }
         guard overallTotal > 0 else {
@@ -466,8 +623,14 @@ actor OfflineDownloadManager {
             try? bgContext.save()
             AppLogger.cache.debug("OfflineDownloadManager: alles vollständig, nichts zu laden.")
             await evictNoLongerPinned(container: container)
-            return
+            eintrag.ende = .nichtsZuTun
+            return true
         }
+        eintrag.geplant = overallTotal
+        let ladeStart = Date()
+        ladenBeginn = ladeStart
+        await updateProgress { $0.letzteDatei = ladeStart }
+        var netzGestoppt = false
 
         // `isActive` steht schon seit dem Beginn des Laufs; hier kommt nur die
         // nun bekannte Gesamtzahl dazu, womit `labelText` von „Vorbereitung…"
@@ -497,6 +660,7 @@ actor OfflineDownloadManager {
                 // ein anderes darf vielleicht über Mobilfunk.
                 guard wahlQuelle != nil else { break }
                 await vermerkeWartend(entry.pin.pinId, true)
+                netzGestoppt = true
                 continue
             }
 
@@ -515,6 +679,7 @@ actor OfflineDownloadManager {
             )
 
             guard !verworfenePins.contains(entry.pin.pinId) else { continue }
+            if ergebnis.angehalten { netzGestoppt = true }
             await vermerkeWartend(entry.pin.pinId, ergebnis.angehalten)
             if ergebnis.fehler > 0 {
                 entry.pin.lastError = Self.downloadFehlerText(fehler: ergebnis.fehler, von: entry.items.count)
@@ -533,8 +698,81 @@ actor OfflineDownloadManager {
             await vermerkeWartend(entry.pin.pinId, false)
         }
 
+        // ── 4. Nachlauf der Entdoppelten ──────────────────────────────────────
+        // Eine Quelle, der das Entdoppeln Posten abgenommen hat, ist erst fertig,
+        // wenn deren Dateien auch liegen. Die andere Quelle kann gescheitert sein,
+        // auf WLAN warten oder mitten im Lauf freigegeben worden sein.
+        for (pin, mobilfunk) in nachzupruefen where !shouldStop {
+            guard !verworfenePins.contains(pin.pinId), Self.pinExistiert(pin.pinId, in: container),
+                  let wahl = wahlQuelle?(pin.pinId) else { continue }
+            let rest = Self.fehlendeDateien(for: pin.assetIds, in: bgContext, wahl: wahl)
+            guard !rest.isEmpty else {
+                if pin.lastError == nil { pin.lastCompletedAt = Date() }
+                continue
+            }
+            let netzPruefen = respectMetered && !mobilfunk && !mobilfunkFreigabe.contains(pin.pinId)
+            if netzPruefen && isMetered {
+                pin.lastCompletedAt = nil
+                await vermerkeWartend(pin.pinId, true)
+                continue
+            }
+            let ergebnis = await download(items: rest, apiClient: apiClient, bgContext: bgContext,
+                                          netzPruefen: netzPruefen, pinId: pin.pinId)
+            guard !verworfenePins.contains(pin.pinId) else { continue }
+            await vermerkeWartend(pin.pinId, ergebnis.angehalten)
+            if ergebnis.fehler > 0 {
+                pin.lastError = Self.downloadFehlerText(fehler: ergebnis.fehler, von: rest.count)
+                pin.lastCompletedAt = nil
+            } else if !ergebnis.abgebrochen && !ergebnis.angehalten {
+                pin.lastError = nil
+                pin.lastCompletedAt = Date()
+            } else {
+                pin.lastCompletedAt = nil
+            }
+        }
+        try? bgContext.save()
+
         await evictNoLongerPinned(container: container)
         AppLogger.cache.info("OfflineDownloadManager: Lauf beendet.")
+
+        // Zahlen aus dem Fortschritt, bevor der Aufrufer ihn zurücksetzt.
+        let (erledigt, gescheitert) = await MainActor.run {
+            (OfflineSyncProgress.shared.completed, OfflineSyncProgress.shared.failed)
+        }
+        eintrag.ladeSek = Date().timeIntervalSince(ladeStart)
+        eintrag.messung = sammler.isEmpty ? nil : sammler.zusammenfassung(ladeSek: eintrag.ladeSek ?? 0)
+        eintrag.netzEnde = pfadText
+        eintrag.netzWechsel = netzWechsel
+        if shouldStop { eintrag.abbruchGrund = abbruchGrund ?? "unbekannt" }
+        eintrag.fehler = gescheitert
+        eintrag.geladen = max(0, erledigt - gescheitert)
+        eintrag.ende = shouldStop ? .abgebrochen : (netzGestoppt ? .netzTeuer : .fertig)
+        return true
+    }
+
+    /// Je Foto lädt genau eine Liste: die mit der besten Fassung, bei Gleichstand
+    /// die frühere — auch wenn dafür ein **früherer** Vorschau-Posten einem späteren
+    /// Original weicht (sonst lüde beides und die Vorschau würde verworfen). Eine
+    /// Liste, die nur über WLAN darf, verdrängt aber nie einen Posten einer Liste mit
+    /// Mobilfunk-Freigabe — sonst wartete das Foto unterwegs auf eine Quelle, die
+    /// gerade nicht lädt.
+    static func entdoppelt(_ listen: [(posten: [OfflineLadeposten], mobilfunk: Bool)]) -> [[OfflineLadeposten]] {
+        func rang(_ f: OfflineFassung) -> Int { f == .original ? 1 : 0 }
+        // assetId → alle (Liste, Rang).
+        var vorkommen: [String: [(liste: Int, rang: Int)]] = [:]
+        for (i, liste) in listen.enumerated() {
+            for posten in liste.posten { vorkommen[posten.assetId, default: []].append((i, rang(posten.fassung))) }
+        }
+        return listen.enumerated().map { i, liste in
+            liste.posten.filter { posten in
+                let eigen = rang(posten.fassung)
+                return !(vorkommen[posten.assetId] ?? []).contains { j in
+                    j.liste != i
+                        && (listen[j.liste].mobilfunk || !liste.mobilfunk)
+                        && (j.rang > eigen || (j.rang == eigen && j.liste < i))
+                }
+            }
+        }
     }
 
     // MARK: - Auflösung
@@ -604,6 +842,13 @@ actor OfflineDownloadManager {
     /// Einstellung selbst ab.
     private func resolveZuletztPin(_ pin: OfflinePin, apiClient: ImmichAPIClient, bgContext: ModelContext) async {
         guard let filter = ZuletztOffline.filter(tage: ZuletztOffline.tage()) else { return }
+        await resolveSuchPin(pin, filter: filter, apiClient: apiClient, bgContext: bgContext)
+    }
+
+    /// Gemeinsamer Weg der Vermerke, deren Mitgliedschaft eine Suche ist („Letzte
+    /// Tage“, Favoriten, Personen): blättern, `CachedAsset` anlegen bzw. auffrischen.
+    /// Bei einem Fehler bleibt die alte Mitgliedschaft stehen.
+    private func resolveSuchPin(_ pin: OfflinePin, filter: SearchFilter, apiClient: ImmichAPIClient, bgContext: ModelContext) async {
         // Was die Wahl ausschließt („Videos: Keine“), kommt gar nicht erst in die
         // Mitgliedschaft — sonst zeigte die Kachel Videos, die nie geladen werden,
         // und ohne Netz blieben genau diese Kacheln leer. Ändert der Nutzer die Wahl,
@@ -639,9 +884,13 @@ actor OfflineDownloadManager {
             pin.lastResolvedAt = Date()
             pin.lastError = nil
         } catch {
-            pin.lastError = String(localized: "Couldn't load recent photos from the server: \(error.localizedDescription)")
-            AppLogger.cache.error("OfflineDownloadManager: Auflösung „Letzte Tage“ fehlgeschlagen: \(error)")
+            pin.lastError = String(localized: "Couldn't load \(pin.displayName) from the server: \(error.localizedDescription)")
+            AppLogger.cache.error("OfflineDownloadManager: Auflösung „\(pin.pinId)“ fehlgeschlagen: \(error)")
         }
+    }
+
+    static var personWegText: String {
+        String(localized: "This person no longer exists on the server. Remove it to free up space.")
     }
 
     static var albumWegText: String {
@@ -719,6 +968,7 @@ actor OfflineDownloadManager {
         let eindeutig = assetIds.filter { gesehen.insert($0).inserted }
 
         var fehlend: [String: String] = [:]   // assetId → monthKey
+        var hatAktualisiert = false
         var start = 0
         while start < eindeutig.count {
             let ids = Set(eindeutig[start..<min(start + 500, eindeutig.count)])
@@ -731,8 +981,17 @@ actor OfflineDownloadManager {
             guard let treffer = try? context.fetch(descriptor) else { continue }
             for asset in treffer {
                 if let pfad = asset.localFilePath, dateiDa(pfad) { continue }
+                if let vorhandenerPfad = LocalFileCacheManager.existingCachedPath(assetId: asset.assetId, monthKey: asset.monthKey, fassung: .original),
+                   dateiDa(vorhandenerPfad) {
+                    asset.localFilePath = vorhandenerPfad
+                    hatAktualisiert = true
+                    continue
+                }
                 fehlend[asset.assetId] = asset.monthKey
             }
+        }
+        if hatAktualisiert {
+            try? context.save()
         }
         return eindeutig.compactMap { id in fehlend[id].map { (assetId: id, monthKey: $0) } }
     }
@@ -754,6 +1013,7 @@ actor OfflineDownloadManager {
         var fotos: [(datum: String, posten: OfflineLadeposten)] = []
         var videos: [(datum: String, posten: OfflineLadeposten)] = []
 
+        var hatAktualisiert = false
         var start = 0
         while start < eindeutig.count {
             let ids = Set(eindeutig[start..<min(start + 500, eindeutig.count)])
@@ -768,6 +1028,12 @@ actor OfflineDownloadManager {
                 if let pfad = asset.localFilePath,
                    wahl.reicht(OfflineFassung.aus(pfad: pfad), istVideo: istVideo),
                    dateiDa(pfad) { continue }
+                if let vorhandenerPfad = LocalFileCacheManager.existingCachedPath(assetId: asset.assetId, monthKey: asset.monthKey, fassung: ziel),
+                   dateiDa(vorhandenerPfad) {
+                    asset.localFilePath = vorhandenerPfad
+                    hatAktualisiert = true
+                    continue
+                }
                 let posten = OfflineLadeposten(assetId: asset.assetId, monthKey: asset.monthKey, fassung: ziel)
                 if istVideo {
                     videos.append((asset.fileCreatedAt, posten))
@@ -775,6 +1041,9 @@ actor OfflineDownloadManager {
                     fotos.append((asset.fileCreatedAt, posten))
                 }
             }
+        }
+        if hatAktualisiert {
+            try? context.save()
         }
         let neuesteZuerst: ((datum: String, posten: OfflineLadeposten), (datum: String, posten: OfflineLadeposten)) -> Bool = {
             $0.datum != $1.datum ? $0.datum > $1.datum : $0.posten.assetId < $1.posten.assetId
@@ -808,16 +1077,31 @@ actor OfflineDownloadManager {
                 let item = items[index]
                 index += 1
                 group.addTask {
+                    let box = DateiBox()
+                    let beginn = Date()
+                    await self.updateProgress { $0.anfragen[item.assetId] = beginn }
                     do {
-                        let path = try await LocalFileCacheManager.downloadToCache(
-                            assetId: item.assetId,
-                            monthKey: item.monthKey,
-                            fassung: item.fassung,
-                            apiClient: apiClient
-                        )
+                        let path = try await OfflineWiederholung.mitWiederholung {
+                            box.neuerVersuch()
+                            return try await LocalFileCacheManager.downloadToCache(
+                                assetId: item.assetId,
+                                monthKey: item.monthKey,
+                                fassung: item.fassung,
+                                apiClient: apiClient,
+                                metrik: { box.setze($0) }
+                            )
+                        }
+                        await self.nimmMessung(OfflineDateiMessung(
+                            gesamtSek: Date().timeIntervalSince(beginn), transfer: box.metrik,
+                            versuche: box.versuche, fehler: nil, zeitueberschreitung: false))
                         return (item.assetId, path)
                     } catch {
+                        let art = OfflineDateiMessung.schluessel(fuer: error)
+                        await self.nimmMessung(OfflineDateiMessung(
+                            gesamtSek: Date().timeIntervalSince(beginn), transfer: box.metrik,
+                            versuche: box.versuche, fehler: art.text, zeitueberschreitung: art.zeitueberschreitung))
                         AppLogger.cache.error("OfflineDownloadManager: Download von \(item.assetId) fehlgeschlagen: \(error)")
+                        await self.merkeDownloadFehler(error)
                         return (item.assetId, nil)
                     }
                 }
@@ -835,6 +1119,8 @@ actor OfflineDownloadManager {
                 await updateProgress { p in
                     p.completed += 1
                     if path == nil { p.failed += 1 }
+                    p.anfragen[assetId] = nil
+                    p.letzteDatei = Date()
                 }
 
                 if pending.count >= Self.persistBatchSize {

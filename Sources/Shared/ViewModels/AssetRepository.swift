@@ -214,6 +214,52 @@ final class AssetRepository {
         forceRefreshTrigger = UUID()
     }
 
+    /// Lädt bei Bedarf weitere Seiten aus dem SQLite-Index nach, bis das angeforderte
+    /// Offset im Speicher liegt.
+    func ensureLoaded(upToOffset targetOffset: Int) async {
+        guard isLocalPagingEnabled else { return }
+        let neededCount = min(localVisibleTotal, targetOffset + 500)
+        guard neededCount > localOffset else { return }
+
+        let fetchOffset = localOffset
+        let fetchLimit = neededCount - fetchOffset
+
+        let newAssets = await Task.detached(priority: .userInitiated) { [gridIndex] in
+            gridIndex.loadVisiblePage(offset: fetchOffset, limit: fetchLimit)
+        }.value
+
+        guard !newAssets.isEmpty else { return }
+        localOffset += newAssets.count
+        cachedAssets.append(contentsOf: newAssets)
+        hasMore = localOffset < localVisibleTotal
+        forceRefreshTrigger = UUID()
+    }
+
+    /// Stellt sicher, dass das Asset mit der ID `id` in `cachedAssets` geladen ist.
+    @discardableResult
+    func ensureLoaded(forAssetId id: String) async -> Int? {
+        if let idx = cachedAssets.firstIndex(where: { $0.id == id }) {
+            return idx
+        }
+        guard let targetOffset = gridIndex.offsetOfAsset(id: id) else { return nil }
+        await ensureLoaded(upToOffset: targetOffset)
+        return cachedAssets.firstIndex(where: { $0.id == id })
+    }
+
+    /// Stellt sicher, dass Aufnahmen um das angegebene Datum in `cachedAssets` geladen sind.
+    @discardableResult
+    func ensureLoaded(forDate date: Date) async -> Int? {
+        let cal = Calendar.current
+        let endOfDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: date)) ?? date
+        let targetISO = Asset.isoString(from: endOfDay)
+        if let idx = cachedAssets.firstIndex(where: { $0.fileCreatedAt <= targetISO }) {
+            return idx
+        }
+        guard let targetOffset = gridIndex.offsetOfDate(targetISO) else { return nil }
+        await ensureLoaded(upToOffset: targetOffset)
+        return cachedAssets.firstIndex(where: { $0.fileCreatedAt <= targetISO })
+    }
+
     // MARK: - API Fallback
     func loadFromAPI() async throws {
         apiAssets = []

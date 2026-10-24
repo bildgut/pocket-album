@@ -86,6 +86,13 @@ struct Album: Codable, Identifiable, Hashable, Sendable {
     static func == (lhs: Album, rhs: Album) -> Bool {
         lhs.id == rhs.id
     }
+
+    /// Ob dieses Album ein gespiegeltes Smart Album ist.
+    /// Auf dem Server tragen gespiegelte Smart Alben das Präfix „✦ “ (U+2726 + Leerzeichen)
+    /// oder beginnen mit dem Zeichen „✦“.
+    var isSmartAlbum: Bool {
+        albumName.hasPrefix("✦ ") || albumName.hasPrefix("✦")
+    }
 }
 
 struct AlbumDetail: Codable, Identifiable, Sendable {
@@ -114,5 +121,25 @@ struct AlbumDetail: Codable, Identifiable, Sendable {
         description = try container.decodeIfPresent(String.self, forKey: .description)
         assetCount = try container.decode(Int.self, forKey: .assetCount)
         assets = (try? container.decode([Asset].self, forKey: .assets)) ?? []
+    }
+}
+
+// MARK: - Smart Album Detection & Filtering
+
+extension Album {
+    /// Präfix für auf den Immich-Server gespiegelte Smart Alben (U+2726 "✦ ").
+    static let smartAlbumMirrorPrefix = "✦ "
+
+    /// Prüft, ob dieses Album ein gespiegeltes Smart Album ist.
+    /// Erkennbar am einheitlichen Präfix ("✦ ") oder an einer bekannten Server-Spiegel-ID.
+    func isSmartAlbum(mirroredIds: Set<String> = []) -> Bool {
+        albumName.hasPrefix(Album.smartAlbumMirrorPrefix) || mirroredIds.contains(id)
+    }
+}
+
+extension Array where Element == Album {
+    /// Filtert alle gespiegelten Smart Alben heraus, sodass nur reguläre, manuell befüllbare Alben übrig bleiben.
+    func excludingSmartAlbums(mirroredIds: Set<String> = []) -> [Album] {
+        filter { !$0.isSmartAlbum(mirroredIds: mirroredIds) }
     }
 }

@@ -90,6 +90,10 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
     let stackId: String?
     /// Total number of assets in the stack (nil when unknown, e.g. from sync stream).
     let stackCount: Int?
+    /// The primary asset ID in the stack, if known.
+    let stackPrimaryAssetId: String?
+    /// Badge text to render, e.g. "JPEG + RAW", "HEIC + RAW", or nil
+    let stackBadgeText: String?
     /// Asset ID of the paired Live Photo video when this asset is the primary photo.
     let livePhotoVideoId: String?
 
@@ -143,6 +147,8 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
         height: Int? = nil,
         stackId: String? = nil,
         stackCount: Int? = nil,
+        stackPrimaryAssetId: String? = nil,
+        stackBadgeText: String? = nil,
         livePhotoVideoId: String? = nil,
         visibility: AssetVisibility? = nil,
         checksum: String? = nil
@@ -170,6 +176,8 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
         self._height = height
         self.stackId = stackId
         self.stackCount = stackCount
+        self.stackPrimaryAssetId = stackPrimaryAssetId
+        self.stackBadgeText = stackBadgeText
         self.livePhotoVideoId = livePhotoVideoId
         self.visibility = visibility
         self.checksum = checksum
@@ -245,10 +253,13 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
         if let stack = try c.decodeIfPresent(AssetStack.self, forKey: .stack) {
             stackId = stack.id
             stackCount = stack.assetCount
+            stackPrimaryAssetId = stack.primaryAssetId
         } else {
             stackId = nil
             stackCount = nil
+            stackPrimaryAssetId = nil
         }
+        stackBadgeText = try c.decodeIfPresent(String.self, forKey: .stackBadgeText)
         livePhotoVideoId = try c.decodeIfPresent(String.self, forKey: .livePhotoVideoId)
         // `try?` statt `try`: Ein Wert, den dieses Enum nicht kennt (ein
         // späterer Server könnte einen fünften einführen), darf nicht das ganze
@@ -287,8 +298,9 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
         try c.encodeIfPresent(_height, forKey: ._height)
         // Re-serialise stack as a minimal nested object so round-trips work
         if let stackId {
-            try c.encode(EncodableStack(id: stackId, assetCount: stackCount ?? 1), forKey: .stack)
+            try c.encode(EncodableStack(id: stackId, assetCount: stackCount ?? 1, primaryAssetId: stackPrimaryAssetId), forKey: .stack)
         }
+        try c.encodeIfPresent(stackBadgeText, forKey: .stackBadgeText)
         try c.encodeIfPresent(livePhotoVideoId, forKey: .livePhotoVideoId)
         try c.encodeIfPresent(visibility, forKey: .visibility)
         // Aus demselben Grund mitgeschrieben wie `localDateTime` oben. `checksum`
@@ -305,6 +317,7 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
         case isFavorite, isArchived, duration, thumbhash, isTrashed, isOffline, isEdited, exifInfo, people, tags
         case checksum
         case stack
+        case stackBadgeText
         case livePhotoVideoId
         case visibility
         case _width = "width"
@@ -354,6 +367,19 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
     /// Kennung genügt daher als Nachweis. Die Anzahl bleibt als zweite Quelle
     /// stehen, falls je ein Pfad nur sie liefert.
     var isStacked: Bool { stackId != nil || (stackCount ?? 0) > 1 }
+
+    /// True when this asset is a child (non-primary) asset within a stack.
+    var isStackChild: Bool {
+        guard stackId != nil, let primaryId = stackPrimaryAssetId else { return false }
+        return primaryId != id
+    }
+
+    /// True when this asset is the primary asset of a stack.
+    var isStackPrimary: Bool {
+        guard stackId != nil else { return false }
+        guard let primaryId = stackPrimaryAssetId else { return true }
+        return primaryId == id
+    }
 
     /// Zweiter Parser ohne Sekundenbruchteile.
     ///
@@ -432,11 +458,13 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
 private struct AssetStack: Decodable {
     let id: String
     let assetCount: Int
+    let primaryAssetId: String?
 }
 
 private struct EncodableStack: Encodable {
     let id: String
     let assetCount: Int
+    let primaryAssetId: String?
 }
 
 struct ExifInfo: Codable, Sendable {

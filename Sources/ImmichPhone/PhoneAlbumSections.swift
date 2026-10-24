@@ -31,7 +31,7 @@ struct PhoneAlbumSections {
     /// und die Server-API kennzeichnet ein gespiegeltes Album in keiner Weise —
     /// für sie ist es ein gewöhnliches Album, das zufällig so heißt. Der Name
     /// ist also das einzige Merkmal, das hier ankommt.
-    static let spiegelPraefix = "✦ "
+    static let spiegelPraefix = Album.smartAlbumMirrorPrefix
 
     /// "Auf dem Telefon" — gefiltert wie die anderen Abschnitte.
     let aufDemTelefon: [Album]

@@ -1584,6 +1584,45 @@ final class ApplePhotosSyncManager {
                     }
                 }
 
+                // RAW companion handling: upload paired RAW (DNG) if asset is RAW+HEIC/JPEG
+                var rawAssetId: String? = nil
+                if let rawResource = pairedRawResource(for: candidate.asset) {
+                    let rawLocalIdentifier = candidate.localIdentifier + "/raw"
+                    if let existingRaw = mappings[rawLocalIdentifier]?.immichAssetId {
+                        rawAssetId = existingRaw
+                        AppLogger.upload.debug("AppleSync: reusing mapped RAW companion for \(candidate.originalFilename) → \(existingRaw)")
+                    } else if let previousMainAssetId = mappings[candidate.localIdentifier]?.immichAssetId {
+                        // Migration: If the asset was previously synced before RAW+HEIC splitting,
+                        // the existing mapping is the DNG that was uploaded first.
+                        rawAssetId = previousMainAssetId
+                        upsertMapping(
+                            localIdentifier: rawLocalIdentifier,
+                            immichAssetId: previousMainAssetId,
+                            modificationDate: candidate.modificationDate ?? candidate.creationDate,
+                            fileSize: ApplePhotosSyncManager.resourceFileSize(rawResource),
+                            existingMappings: mappings
+                        )
+                        AppLogger.upload.info("AppleSync: migrated previously uploaded DNG as RAW companion for \(candidate.originalFilename) → \(previousMainAssetId)")
+                    } else {
+                        do {
+                            let rawURL = try await exportResource(rawResource, asset: candidate.asset, into: runDirectory)
+                            defer { try? FileManager.default.removeItem(at: rawURL) }
+                            let uploadedRawId = try await uploadApplePhoto(url: rawURL, localIdentifier: rawLocalIdentifier)
+                            rawAssetId = uploadedRawId
+                            upsertMapping(
+                                localIdentifier: rawLocalIdentifier,
+                                immichAssetId: uploadedRawId,
+                                modificationDate: candidate.modificationDate ?? candidate.creationDate,
+                                fileSize: ApplePhotosSyncManager.resourceFileSize(rawResource),
+                                existingMappings: mappings
+                            )
+                            AppLogger.upload.info("AppleSync: uploaded RAW companion for \(candidate.originalFilename) → \(uploadedRawId)")
+                        } catch {
+                            AppLogger.upload.warning("AppleSync: RAW companion upload failed for \(candidate.originalFilename): \(error.localizedDescription)")
+                        }
+                    }
+                }
+
                 guard let exportedURL else {
                     throw ApplePhotosSyncError.exportFailed("Missing exported file URL.")
                 }
@@ -1600,6 +1639,19 @@ final class ApplePhotosSyncManager {
                     fileSize: candidate.resourceFileSize,
                     existingMappings: mappings
                 )
+
+                // If a RAW companion exists, stack it under the primary stylized HEIC:
+                if let rawAssetId {
+                    do {
+                        let stackId = try await apiClient.createStack(primaryAssetId: assetId, childAssetIds: [rawAssetId])
+                        AppLogger.upload.info("AppleSync: stacked RAW (\(rawAssetId)) under stylized primary (\(assetId)), stackId: \(stackId)")
+                        let badge = candidate.originalFilename.lowercased().hasSuffix(".heic") ? "HEIC + RAW" : "JPEG + RAW"
+                        GridIndexStore.shared.updateStack(primaryId: assetId, childIds: [rawAssetId], stackId: stackId, badgeText: badge)
+                    } catch {
+                        AppLogger.upload.warning("AppleSync: failed to create stack for \(assetId) and RAW \(rawAssetId): \(error.localizedDescription)")
+                    }
+                }
+
                 removeFailure(localIdentifier: candidate.localIdentifier)
                 AppLogger.upload.info("AppleSync: uploaded \(candidate.originalFilename) → \(assetId)")
                 return .uploaded
@@ -1846,7 +1898,7 @@ final class ApplePhotosSyncManager {
                     }
 
                     // Up-to-date mapping → skip cheaply without any PHAssetResource IPC (common case).
-                    if let snapshot, let known = snapshot.lastKnownModificationDate, modified <= known {
+                    if !forceFullSync, let snapshot, let known = snapshot.lastKnownModificationDate, modified <= known {
                         skippedByMappingCount += 1
                         return
                     }
@@ -2222,6 +2274,12 @@ final class ApplePhotosSyncManager {
     private func livePhotoPairedVideoResource(for asset: PHAsset) -> PHAssetResource? {
         guard asset.mediaSubtypes.contains(.photoLive) else { return nil }
         return AppleResourcePicker.pairedVideo(PHAssetResource.assetResources(for: asset))
+    }
+
+    /// Returns the paired RAW resource for a RAW+HEIC/JPEG photo, if present.
+    private func pairedRawResource(for asset: PHAsset) -> PHAssetResource? {
+        guard asset.mediaType == .image else { return nil }
+        return AppleResourcePicker.pairedRaw(PHAssetResource.assetResources(for: asset))
     }
 
     private func preferredResource(in resources: [PHAssetResource], mediaType: PHAssetMediaType = .unknown) -> PHAssetResource? {

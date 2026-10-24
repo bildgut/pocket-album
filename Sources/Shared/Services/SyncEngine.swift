@@ -914,6 +914,9 @@ final class SyncEngine {
             // Sync albums (owned + shared) into SwiftData; notifies UI on changes
             try await syncAlbumsToCache()
 
+            // Sync stacks into GridIndexStore
+            await syncStacksToCache()
+
             // Reconcile trash: remove locally-trashed assets that no longer exist in server trash.
             // This handles the case where the user empties the trash on the Immich web/app —
             // those permanently-deleted assets must also vanish from our local trash view.
@@ -1339,6 +1342,9 @@ final class SyncEngine {
             AppLogger.sync.warning("Album sync after stream failed (non-fatal): \(error)")
         }
 
+        // Stacks are also independent of stream sync — sync them here.
+        await syncStacksToCache()
+
         // --- Local File Cache: post-sync housekeeping (low-priority background task) ---
         // IMPORTANT: This block must mirror the identical block in performDeltaSync.
         // Without it, the file cache is never populated when stream sync is active,
@@ -1418,6 +1424,21 @@ final class SyncEngine {
             where !serverAlbumIds.contains(albumId) {
                 AlbumMembershipStore.shared.removeAlbum(albumId: albumId)
             }
+        }
+    }
+
+    // MARK: - Stack Sync
+
+    /// Fetch all stacks from Immich and apply them to GridIndexStore.
+    /// Child assets receive isStackChild = 1 (hidden from main timeline),
+    /// and primary assets receive their stack badge text (e.g. "JPEG + RAW").
+    private func syncStacksToCache() async {
+        do {
+            let stacks = try await apiClient.getStacks()
+            GridIndexStore.shared.applyStacks(stacks)
+            AppLogger.sync.info("Stack sync: applied \(stacks.count) stacks to GridIndexStore")
+        } catch {
+            AppLogger.sync.warning("Stack sync failed (non-fatal): \(error)")
         }
     }
 

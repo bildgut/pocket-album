@@ -130,8 +130,8 @@ struct OfflineLaufMitWahlTests {
 
         await m.syncOfflineAlbums(container: c, apiClient: OrteMockURLProtocol.client(host: host), force: true)
 
-        // Die ersten drei liefen schon (Fenster = 3), danach keine neue.
-        #expect(mitschnitt.alle.count == 3)
+        // Die ersten liefen schon (Startfenster), danach keine neue.
+        #expect(mitschnitt.alle.count == OfflineDownloadManager.maxConcurrentDownloads)
         #expect(OfflineSyncProgress.shared.wartetAufWLAN.contains(pinId))
         #expect(try pin(c).lastCompletedAt == nil)
     }

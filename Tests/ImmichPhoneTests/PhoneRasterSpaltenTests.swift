@@ -22,6 +22,11 @@ struct PhoneRasterSpaltenTests {
         #expect(PhoneRasterSpalten.anzahl(breite: 788, minimum: PhoneRasterSpalten.kachelMinimum, abstand: 12) == 4)
     }
 
+    @Test("iPhone bekommt 4 Gesichter-Spalten")
+    func gesichter() {
+        #expect(PhoneRasterSpalten.anzahl(breite: 370, minimum: PhoneRasterSpalten.gesichtMinimum, abstand: 12) == 4)
+    }
+
     @Test("Schmale Breite ergibt eine Spalte")
     func schmal() {
         #expect(PhoneRasterSpalten.anzahl(breite: 50, minimum: 120, abstand: 2) == 1)

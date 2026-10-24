@@ -1,40 +1,6 @@
 import SwiftUI
 import SwiftData
 
-/// Eine Zeile der Offline-Übersicht: die Kennzahlen aus ``PhoneStorageSummary``
-/// plus das, was zum Freigeben nötig ist.
-///
-/// Eigener Typ auf Dateiebene, nicht in der Ansicht verschachtelt, weil er aus
-/// einem `Task.detached` zurückkommt und dafür `Sendable` sein muss.
-///
-/// **Die `id` ist der `pinId`, nicht der Name.** `PhoneStorageSummary.Eintrag` ist
-/// bewusst nicht `Identifiable`: Zwei Alben dürfen gleich heißen, und ein `ForEach`
-/// über gleiche IDs zeigt in SwiftUI nur eine der Zeilen — beim Freigeben träfe es
-/// dann womöglich das falsche Album. `pinId` (`"album:<id>"`) ist dagegen als
-/// `@Attribute(.unique)` am Modell garantiert eindeutig.
-private struct PhoneOfflineZeile: Identifiable, Sendable {
-    /// `OfflinePin.pinId`.
-    let id: String
-    let kind: OfflinePinKind
-    let targetId: String
-    let eintrag: PhoneStorageSummary.Eintrag
-
-    var name: String { eintrag.name }
-}
-
-/// Was zum Rechnen in den Hintergrund muss. `OfflinePin` ist ein `@Model` und damit
-/// nicht `Sendable` — über die Actor-Grenze geht nur dieser Schnappschuss.
-private struct PhonePinSchnappschuss: Sendable {
-    let pinId: String
-    let kind: OfflinePinKind
-    let targetId: String
-    let name: String
-    let assetIds: [String]
-    let fehler: String?
-    /// Offline-Wahl des Vermerks — bestimmt, ob Videos mitzählen.
-    let wahl: OfflineWahl?
-}
-
 /// Der Reiter „Einstellungen": woran das Telefon hängt, was es belegt, und der Weg
 /// zurück.
 ///
@@ -80,8 +46,7 @@ struct PhoneSettingsView: View {
 
     /// Die Zahlen zu den Vermerken. Außerhalb des View-Bodys berechnet: Jede Zeile
     /// kostet einen Fetch über alle Assets mit lokaler Datei.
-    @State private var zeilen: [PhoneOfflineZeile] = []
-    @State private var wirdBerechnet = false
+    @State private var quellen: [PhoneOfflineQuelle] = []
 
     /// Zählt jede Neuberechnung hoch. Ein Lauf, der nach seinem `await` eine andere
     /// Zahl vorfindet, wurde überholt und verwirft sein Ergebnis — siehe
@@ -90,20 +55,8 @@ struct PhoneSettingsView: View {
     @State private var zeigtAbmeldeFrage = false
     @State private var zeigtVorspann = false
 
-    /// Was beim letzten „Freigeben" passiert ist. Ohne diese Zeile bliebe von der
-    /// Aktion nur eine verschwundene Zeile übrig — dass dabei auch die Dateien vom
-    /// Gerät geräumt werden, wäre unsichtbar.
-    /// Die Meldung zur zuletzt freigegebenen Sammlung. Sie verfällt, sobald die
-    /// Zahlen neu berechnet sind — sonst stünde sie den Rest der Sitzung da, auch
-    /// nachdem weitere Alben freigegeben oder neu gepinnt wurden.
-    @State private var letzteFreigabe: String?
-
-    /// Stufe und Qualität von „Letzte Tage offline“, beim Erscheinen gelesen.
-    @State private var zuletztTage = ZuletztOffline.tage()
-    @State private var zuletztWahl = OfflineWahlSpeicher().wahl(fuer: ZuletztOffline.pinId) ?? ZuletztOffline.vorgabeWahl
-
     private var zusammenfassung: PhoneStorageSummary {
-        PhoneStorageSummary(eintraege: zeilen.map(\.eintrag))
+        PhoneStorageSummary(eintraege: quellen.map(\.eintrag))
     }
 
     private var status: PhoneServerStatus {
@@ -114,7 +67,6 @@ struct PhoneSettingsView: View {
         NavigationStack {
             List {
                 serverAbschnitt
-                zuletztAbschnitt
                 offlineAbschnitt
                 orteAbschnitt
                 abmeldeAbschnitt
@@ -122,6 +74,7 @@ struct PhoneSettingsView: View {
             }
             .navigationTitle("Settings")
         }
+        .phoneOfflineProgressBanner()
         // An der Ansicht, nicht an der Listenzeile: Eine Zeile wird beim Reiterwechsel
         // und beim Drehen neu aufgebaut, ein dort hängendes Cover mit ihr.
         .fullScreenCover(isPresented: $zeigtVorspann) {
@@ -130,12 +83,6 @@ struct PhoneSettingsView: View {
         // Die IDs statt `pins.count` wie am Mac: Wird ein Album freigegeben und
         // gleichzeitig ein anderes gepinnt, bliebe die Zahl gleich und die Zeilen
         // zeigten weiter das alte Album.
-        // Die Freigabe-Meldung gehört zu dem Besuch, in dem sie ausgelöst wurde.
-        // Sie hier zu löschen und nicht am Ende von `kennzahlenNeuBerechnen()` ist
-        // Absicht: Dort verschwände sie sofort nach dem Freigeben — dessen
-        // Pin-Änderung stößt ja genau diese Neuberechnung an —, also bevor jemand
-        // sie lesen kann. So bleibt sie stehen, bis der Reiter neu betreten wird.
-        .onAppear { letzteFreigabe = nil }
         .task(id: pins.map(\.pinId)) {
             await kennzahlenNeuBerechnen()
         }
@@ -207,153 +154,25 @@ struct PhoneSettingsView: View {
         return adresse.isEmpty ? String(localized: "not set up") : adresse
     }
 
-    // MARK: - Letzte Tage offline
+    // MARK: - Offline
 
-    /// Stufe und Qualität von „Letzte Tage offline“. Jede Änderung geht sofort an
-    /// `PhoneOfflineModel.setzeZuletzt` — der Lauf startet dort mit `force`, und
-    /// was aus dem Fenster fällt, räumt er am Ende ab. Größe und Fortschritt stehen
-    /// darunter in der Offline-Liste, als Zeile wie ein Album.
-    private var zuletztAbschnitt: some View {
-        Section {
-            Picker(selection: $zuletztTage) {
-                ForEach(ZuletztOffline.stufen, id: \.self) { tage in
-                    Text(tage == 0 ? String(localized: "Off") : String(localized: "\(tage) days")).tag(tage)
-                }
-            } label: {
-                Label(String(localized: "Recent Photos"), systemImage: OfflinePinKind.zuletzt.iconName)
-            }
-            if zuletztTage > 0 {
-                Picker(String(localized: "Photos"), selection: $zuletztWahl.fotos) {
-                    Text(String(localized: "Preview")).tag(OfflineWahl.Fotos.vorschau)
-                    Text(String(localized: "Original")).tag(OfflineWahl.Fotos.original)
-                }
-                Picker(String(localized: "Videos"), selection: $zuletztWahl.videos) {
-                    Text(String(localized: "None")).tag(OfflineWahl.Videos.keine)
-                    Text(String(localized: "Small")).tag(OfflineWahl.Videos.klein)
-                    Text(String(localized: "Original")).tag(OfflineWahl.Videos.original)
-                }
-                Toggle(String(localized: "Also over Cellular"), isOn: $zuletztWahl.mobilfunk)
-            }
-        } header: {
-            Text("Keep Offline")
-        } footer: {
-            Text(String(localized: "Photos you took in the last days stay on this iPhone and are replaced automatically as new ones arrive. Photos from shared albums are not included."))
-        }
-        .disabled(connection.apiClient == nil)
-        .onChange(of: zuletztTage) { _, tage in
-            guard let apiClient = connection.apiClient else { return }
-            OfflineWahlSpeicher().setze(zuletztWahl, fuer: ZuletztOffline.pinId, alsLetzte: false)
-            PhoneOfflineModel().setzeZuletzt(tage: tage, context: modelContext, apiClient: apiClient)
-        }
-        .onChange(of: zuletztWahl) { _, wahl in
-            guard let apiClient = connection.apiClient, zuletztTage > 0 else { return }
-            OfflineWahlSpeicher().setze(wahl, fuer: ZuletztOffline.pinId, alsLetzte: false)
-            PhoneOfflineModel().setzeZuletzt(tage: zuletztTage, context: modelContext, apiClient: apiClient)
-        }
-        // Entfernt jemand „Letzte Tage“ in der Offline-Liste, steht die Stufe danach
-        // auf 0 — der Picker muss das sehen.
-        .onChange(of: pins.map(\.pinId)) { _, _ in
-            zuletztTage = ZuletztOffline.tage()
-        }
-    }
-
-    // MARK: - Offline-Alben
-
+    /// Eine Zeile statt der früheren Abschnitte „Letzte Tage“ und „Offline-Alben“:
+    /// Alle Quellen, ihre Reihenfolge und Qualität verwaltet die Seite „Offline“.
     private var offlineAbschnitt: some View {
         Section {
-            if zusammenfassung.istLeer {
-                Text(leerHinweis)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(zeilen) { zeile in
-                    offlineZeile(zeile)
-                }
-            }
-        } header: {
-            HStack {
-                Text("Offline Albums")
-                Spacer()
-                if !zusammenfassung.istLeer {
-                    // Die Gesamtsumme aus `PhoneStorageSummary` — dieselbe Rechnung
-                    // wie über die Einzelzeilen, nur einmal an einer Stelle.
-                    Text(gesamtText)
+            NavigationLink {
+                PhoneOfflineQuellenView()
+            } label: {
+                LabeledContent {
+                    Text(PhoneOfflineQuellen.zusammenfassung(quellen))
                         .monospacedDigit()
+                } label: {
+                    Label("Offline", systemImage: "arrow.down.circle")
                 }
             }
         } footer: {
-            if let letzteFreigabe {
-                Text(letzteFreigabe)
-                    .font(.caption)
-            }
+            Text("Favorites, recent days, people and albums you keep on this iPhone.")
         }
-    }
-
-    private var leerHinweis: String {
-        String(localized: "No albums are kept offline. You’ll find the switch in an album tile’s context menu and in the album’s header.")
-    }
-
-    private var gesamtText: String {
-        let anzahl = zusammenfassung.anzahlAlben
-        return String(localized: "\(zusammenfassung.gesamtGroesse) · \(anzahl) albums")
-    }
-
-    @ViewBuilder
-    private func offlineZeile(_ zeile: PhoneOfflineZeile) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Image(systemName: zeile.kind.iconName)
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(zeile.name)
-                    .font(.callout)
-                    .lineLimit(2)
-
-                Text(zeile.eintrag.zustand.beschreibung)
-                    .font(.caption.monospacedDigit())
-                    // Der Fehlerfall gewinnt in `PhoneStorageSummary.Eintrag.zustand`
-                    // über „vollständig" — hier bekommt er auch die Farbe, wie am
-                    // Mac (`OfflineAlbumsSettingsSection`, `.orange`).
-                    .foregroundStyle(zeile.eintrag.zustand.istFehler ? Color.orange : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(zeile.eintrag.groesse)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-
-                // Ohne Rückfrage — anders als das Abmelden ist das hier lokal und
-                // umkehrbar: Ein Tipp auf dasselbe Album im Raster pinnt es wieder.
-                // Was passiert, steht dafür in der Fußzeile des Abschnitts.
-                Button("Remove", role: .destructive) {
-                    freigeben(zeile)
-                }
-                .font(.caption)
-                .buttonStyle(.borderless)
-                .disabled(connection.apiClient == nil)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    /// Entfernt den Vermerk über denselben einzigen Aufruf, den auch das Raster und
-    /// der Mac benutzen — `setPinned(false, …)` räumt danach die nicht mehr
-    /// gepinnten Originale weg (`OfflinePinStore.swift:113-116`). Ein direktes
-    /// `unpin(…)` ließe die Dateien liegen.
-    private func freigeben(_ zeile: PhoneOfflineZeile) {
-        guard let apiClient = connection.apiClient else { return }
-        PhoneOfflineModel.hebeAuf(
-            kind: zeile.kind,
-            targetId: zeile.targetId,
-            displayName: zeile.name,
-            context: modelContext,
-            apiClient: apiClient
-        )
-        letzteFreigabe = String(localized: "“\(zeile.name)” is no longer kept offline — \(zeile.eintrag.groesse) will be removed from this device.")
     }
 
     // MARK: - Orte
@@ -417,7 +236,7 @@ struct PhoneSettingsView: View {
             PhoneAbmeldeBlatt(
                 serverAdresse: serverAdresse,
                 offlineGroesse: zusammenfassung.gesamtGroesse,
-                offlineAnzahl: zeilen.count,
+                offlineAnzahl: quellen.count,
                 abmelden: { auchOriginale in
                     zeigtAbmeldeFrage = false
                     Task { await abmelden(auchOriginale: auchOriginale) }
@@ -496,52 +315,17 @@ struct PhoneSettingsView: View {
     /// wer nach seinem `await` eine andere Zahl vorfindet, verwirft sein Ergebnis.
     private func kennzahlenNeuBerechnen() async {
         guard !pins.isEmpty else {
-            zeilen = []
+            quellen = []
             return
         }
         berechnungsLauf &+= 1
         let meinLauf = berechnungsLauf
-        wirdBerechnet = true
-        defer { if meinLauf == berechnungsLauf { wirdBerechnet = false } }
-
-        let container = modelContext.container
         let speicher = OfflineWahlSpeicher()
-        let schnappschuesse = pins.map {
-            PhonePinSchnappschuss(
-                pinId: $0.pinId,
-                kind: $0.kind,
-                targetId: $0.targetId,
-                name: $0.displayName,
-                assetIds: $0.assetIds,
-                fehler: $0.lastError,
-                wahl: speicher.wahl(fuer: $0.pinId)
-            )
-        }
-
-        let ergebnis = await Task.detached(priority: .utility) { () -> [PhoneOfflineZeile] in
-            schnappschuesse.map { schnappschuss in
-                let status = LocalFileCacheManager.statusAufPlatte(
-                    forAssetIds: schnappschuss.assetIds,
-                    wahl: schnappschuss.wahl,
-                    container: container
-                )
-                return PhoneOfflineZeile(
-                    id: schnappschuss.pinId,
-                    kind: schnappschuss.kind,
-                    targetId: schnappschuss.targetId,
-                    eintrag: PhoneStorageSummary.Eintrag(
-                        name: schnappschuss.name,
-                        vorhanden: status.present,
-                        erwartet: status.expected,
-                        bytes: status.bytes,
-                        fehler: schnappschuss.fehler
-                    )
-                )
-            }
-        }.value
-
+        let ergebnis = await PhoneOfflineQuellen.berechne(
+            pins.map { PhoneOfflineQuellen.Schnappschuss($0, speicher: speicher) },
+            container: modelContext.container)
         // Überholt? Dann gehört das Ergebnis zu einem Stand, den es nicht mehr gibt.
         guard meinLauf == berechnungsLauf else { return }
-        zeilen = ergebnis
+        quellen = ergebnis
     }
 }

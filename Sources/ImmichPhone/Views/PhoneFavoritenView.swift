@@ -9,6 +9,9 @@ struct PhoneFavoritenZiel: Hashable {}
 /// Als erste Rasterzelle stünde sie neben dem ersten Album eines Abschnitts
 /// und risse dessen Überschrift auseinander.
 struct PhoneFavoritenKachel: View {
+    /// Offline-Zustand der Favoriten; `.cloud` zeigt nichts an.
+    var badge: OfflineBadge = .cloud
+
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: "star.fill")
@@ -20,6 +23,11 @@ struct PhoneFavoritenKachel: View {
                 .font(.headline)
                 .foregroundStyle(.primary)
             Spacer()
+            if badge != .cloud {
+                Image(systemName: badge.symbolName)
+                    .foregroundStyle(badge == .failed ? Color.orange : Marke.akzent)
+                    .accessibilityLabel(badge.label)
+            }
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.tertiary)
@@ -53,6 +61,8 @@ struct PhoneFavoritenView: View {
         }
         .navigationTitle(PhoneOrtsTexts.favoriten)
         .navigationBarTitleDisplayMode(.inline)
+        .offlineQuelleKnopf(kind: .favoriten, targetId: OfflineQuellenFilter.favoritenTargetId,
+                            titel: PhoneOrtsTexts.favoriten)
         .overlay {
             if feed.abschnitte.isEmpty { leerzustand }
         }

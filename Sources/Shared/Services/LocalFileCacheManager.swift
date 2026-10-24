@@ -43,6 +43,31 @@ actor LocalFileCacheManager {
 
     // MARK: - Download (contextfrei)
 
+    /// Prüft, ob für das Asset und die gewünschte Fassung bereits eine vollständige Datei im Cache liegt.
+    nonisolated static func existingCachedPath(
+        assetId: String,
+        monthKey: String,
+        fassung: OfflineFassung
+    ) -> String? {
+        guard !monthKey.isEmpty else { return nil }
+        let dirURL = cacheDirectory.appending(path: monthKey, directoryHint: .isDirectory)
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dirURL, includingPropertiesForKeys: [.fileSizeKey]) else {
+            return nil
+        }
+        for file in files {
+            let name = file.lastPathComponent
+            guard OfflineFassung.gehoert(dateiname: name, zu: assetId) else { continue }
+            let vorhandeneFassung = OfflineFassung.aus(pfad: name)
+            if vorhandeneFassung == fassung || (fassung != .original && vorhandeneFassung == .original) {
+                if let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 0 {
+                    return "\(monthKey)/\(name)"
+                }
+            }
+        }
+        return nil
+    }
+
     /// Lädt das Original eines Assets in den Cache und liefert den **relativen** Pfad
     /// (`YYYY-MM/assetId.ext`) zurück. Berührt SwiftData nicht.
     ///
@@ -56,6 +81,9 @@ actor LocalFileCacheManager {
         monthKey: String,
         apiClient: ImmichAPIClient
     ) async throws -> String {
+        if let existing = existingCachedPath(assetId: assetId, monthKey: monthKey, fassung: .original) {
+            return existing
+        }
         let dirURL = cacheDirectory.appending(path: monthKey, directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
 
@@ -99,8 +127,12 @@ actor LocalFileCacheManager {
         assetId: String,
         monthKey: String,
         fassung: OfflineFassung,
-        apiClient: ImmichAPIClient
+        apiClient: ImmichAPIClient,
+        metrik: (@Sendable (OfflineTransferMetrik) -> Void)? = nil
     ) async throws -> String {
+        if let existing = existingCachedPath(assetId: assetId, monthKey: monthKey, fassung: fassung) {
+            return existing
+        }
         if fassung == .original {
             return try await downloadOriginalToCache(assetId: assetId, monthKey: monthKey, apiClient: apiClient)
         }
@@ -113,7 +145,7 @@ actor LocalFileCacheManager {
             : apiClient.playbackURL(assetId: assetId)
         let contentType: String?
         do {
-            contentType = try await apiClient.downloadToFile(url: quelle, destinationURL: tempDest)
+            contentType = try await apiClient.downloadToFile(url: quelle, destinationURL: tempDest, metrik: metrik)
         } catch {
             try? FileManager.default.removeItem(at: tempDest)
             throw error
@@ -439,6 +471,22 @@ actor LocalFileCacheManager {
             }
         }
         return (present, eindeutig.count - ausgeschlossen, bytes)
+    }
+
+    /// Liefert alle Asset-IDs zurück, deren Datei aktuell im lokalen Cache vorliegt.
+    nonisolated static func allCachedAssetIds(container: ModelContainer) -> Set<String> {
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<CachedAsset>(
+            predicate: #Predicate<CachedAsset> { $0.localFilePath != nil }
+        )
+        guard let list = try? context.fetch(descriptor) else { return [] }
+        var result = Set<String>()
+        for asset in list {
+            if let path = asset.localFilePath, localFileURL(forPath: path) != nil {
+                result.insert(asset.assetId)
+            }
+        }
+        return result
     }
 
     /// Clear the entire local file cache.

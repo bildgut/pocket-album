@@ -1,6 +1,6 @@
 # Privacy Policy — Pocket Album
 
-*Last updated: September 30, 2026*
+*Last updated: October 24, 2026*
 
 Pocket Album is an unofficial iOS client for [Immich](https://immich.app/), a photo server
 you host yourself. It is not affiliated with or endorsed by the Immich project.
@@ -16,6 +16,12 @@ analytics or advertising code.
 The app talks **only to the Immich server whose address you enter**. Photos, videos,
 album and person names, locations and other metadata are loaded from that server and shown
 on your phone. Changes you make (favorite, move to trash) are sent to that server.
+
+**One exception: maps.** The info sheet of a photo that has a location shows a map. The map is
+provided by Apple Maps (MapKit), so opening the sheet — or choosing “Open in Maps” — makes your
+phone request map tiles for that place from Apple. This is handled by iOS under Apple's own
+privacy policy; the developer of Pocket Album receives nothing. Photos without a location,
+and every other part of the app, never contact Apple's map service.
 
 ## What is stored on your phone
 

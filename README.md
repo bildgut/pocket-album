@@ -31,8 +31,8 @@ Pocket Album does one thing: **showing and finding** photos. It has no backup an
 What it focuses on instead:
 
 - **Albums first.** The app opens on your albums, not on a timeline.
-- **Deliberately offline.** Pick the albums you want on the phone; they're downloaded in full
-  and work without any connection — on a plane, at grandma's, in a basement.
+- **Deliberately offline.** Pick the albums, favorites or people you want on the phone; they're
+  downloaded and work without any connection — on a plane, at grandma's, in a basement.
 - **Find it in two taps.** Start from a person, a country, a year — or just type
   “Anna 2019”, “Italy last summer” or “beach”.
 - **A slideshow for the TV.** AirPlay or an external display shows the photos full screen
@@ -44,6 +44,11 @@ It runs happily next to the official app on the same phone and server.
 ## Features
 
 - **Albums** — your own and shared albums; keep any album on the phone for offline viewing
+- **Offline sources** — besides albums, keep your favorites, the last 3–30 days or chosen people
+  on the phone (people are picked from a grid of faces); drag the sources into the order they
+  should load. A progress bar shows what is still coming, downloads refresh in the background
+  as far as iOS allows, and *Settings → Offline → Download Log* helps when a slow connection
+  makes them stall
 - **Photos** — your whole library, grouped by day, filterable by photos/videos
 - **Explore**
   - search that understands people, years, time spans (“last summer”, “since 2020”),
@@ -51,7 +56,8 @@ It runs happily next to the official app on the same phone and server.
     Immich's smart search (CLIP)
   - recent searches, your most photographed people, countries and years as entry points
   - combine freely: country + year + people, refine with city, year and people chips
-- **Viewer** — pinch to zoom, video playback, favorite, move to trash
+- **Viewer** — pinch to zoom, video playback, favorite, move to trash, and an info sheet with
+  date, camera, exposure, file data and a map of where the photo was taken
 - **Slideshow** — also on AirPlay / an external display, with the phone as remote
 - **Guided setup** — animated intro, live server check, API key check that shows what the key
   may do, or sign in once and let the app create its own key
@@ -132,7 +138,9 @@ fully localized.
 
 ## Privacy
 
-Pocket Album talks only to the server you enter. No analytics, no crash reporting, no
+Pocket Album talks only to the server you enter, with one optional exception: the map in the
+photo info sheet uses Apple Maps, so opening it for a photo with a location shows that location
+to Apple's map service. No analytics, no crash reporting, no
 third-party services. Your API key is stored on the phone in a file only the app can read,
 protected by iOS data protection and excluded from backups; if you use “sign in instead”,
 your password is used once to create a key and is never stored. Details: [PRIVACY.md](PRIVACY.md).

@@ -34,6 +34,9 @@ struct DupeScanRow: Sendable, Equatable, Identifiable {
     /// die Zeile noch nicht erreicht hat oder der Polling-Pfad sie ohne
     /// Checksum angelegt hat.
     let checksum: String?
+    /// Stapel-Zugehörigkeit direkt aus dem Grid-Index, damit erledigte Gruppen
+    /// ohne `ensureAssets`-Nachladen beim Scrollen ausgeblendet bleiben.
+    var stackId: String? = nil
 
     /// Seitenverhältnis, `nil` wenn die Maße fehlen.
     var aspectRatio: Double? {
@@ -346,6 +349,93 @@ enum DupeReach: String, Sendable, CaseIterable, Identifiable {
         switch self {
         case .withinAlbum: return "Nur im Album"
         case .albumAgainstLibrary: return "Album + Bibliothek"
+        }
+    }
+}
+
+// MARK: - Filter & Sortierung
+
+/// Kategorie-Filter für die Anzeige von Duplikat-Gruppen (kein Rematch nötig).
+enum DupeCategoryFilter: String, Sendable, CaseIterable, Identifiable {
+    case alle
+    case identisch
+    case formatOderGroesse
+    case bearbeitet
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .alle: return "Alle"
+        case .identisch: return "100 % Identisch"
+        case .formatOderGroesse: return "Format / Größe"
+        case .bearbeitet: return "Bearbeitet + Original"
+        }
+    }
+}
+
+/// Zeitraum-Filter für Duplikat-Gruppen (nach jüngster Aufnahme der Gruppe).
+enum DupeDateFilter: String, Sendable, CaseIterable, Identifiable {
+    case all
+    case days30
+    case days90
+    case thisYear
+    case lastYear
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .all: return "Gesamte Zeit"
+        case .days30: return "Letzte 30 Tage"
+        case .days90: return "Letzte 90 Tage"
+        case .thisYear: return "Dieses Jahr"
+        case .lastYear: return "Letztes Jahr"
+        }
+    }
+
+    func includes(timestamp: Int, now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        switch self {
+        case .all:
+            return true
+        case .days30:
+            return date >= now.addingTimeInterval(-30 * 86_400)
+        case .days90:
+            return date >= now.addingTimeInterval(-90 * 86_400)
+        case .thisYear:
+            guard let start = calendar.date(from: calendar.dateComponents([.year], from: now)) else {
+                return true
+            }
+            return date >= start
+        case .lastYear:
+            guard let thisYearStart = calendar.date(from: calendar.dateComponents([.year], from: now)),
+                  let lastYearStart = calendar.date(byAdding: .year, value: -1, to: thisYearStart)
+            else {
+                return true
+            }
+            return date >= lastYearStart && date < thisYearStart
+        }
+    }
+}
+
+/// Sortierreihenfolge für Dubletten und ähnliche Aufnahmen.
+enum DupeSortOrder: String, Sendable, CaseIterable, Identifiable {
+    case reclaimableDesc
+    case confidenceDesc
+    case newestFirst
+    case oldestFirst
+    case countDesc
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .reclaimableDesc: return "Größte Ersparnis"
+        case .confidenceDesc: return "Sicherste zuerst"
+        case .newestFirst: return "Neueste zuerst"
+        case .oldestFirst: return "Älteste zuerst"
+        case .countDesc: return "Meiste Kopien"
         }
     }
 }

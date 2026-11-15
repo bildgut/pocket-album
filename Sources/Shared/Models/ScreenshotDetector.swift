@@ -57,6 +57,10 @@ enum ScreenshotDetector {
     /// Öffentlich, weil `WebOriginDetector` genau diesen definitiven Teil vor seinen
     /// eigenen Namensmustern abfragt, ohne den EXIF-lesenden Rest mitzuziehen.
     static func matchesScreenshotFilename(_ asset: Asset) -> Bool {
+        matchesScreenshotFilename(asset.originalFileName)
+    }
+
+    static func matchesScreenshotFilename(_ originalFileName: String) -> Bool {
         // Der typografische Apostroph wird auf den geraden abgebildet, bevor
         // verglichen wird.
         //
@@ -65,7 +69,7 @@ enum ScreenshotDetector {
         // geraden Apostroph und traf deshalb **nie**. Normalisieren statt zwei
         // Schreibweisen zu pflegen: Der nächste Sprachname mit Apostroph erbt die
         // Behandlung, ohne dass jemand daran denken muss.
-        let name = asset.originalFileName
+        let name = originalFileName
             .replacingOccurrences(of: "\u{2019}", with: "'")
             .lowercased()
 
@@ -99,19 +103,70 @@ enum ScreenshotDetector {
     /// getroffen" und dem Gate-Flag selbst ein Gesamtergebnis zusammensetzt, würde
     /// genau die Rekonstruktion wiederholen, die den Negierungs-Fehler erzeugt hat.
     static func isScreenshot(_ asset: Asset, exifIsAuthoritative: Bool) -> Bool? {
-        if matchesScreenshotFilename(asset) { return true }
+        isScreenshot(
+            originalFileName: asset.originalFileName,
+            cameraMake: asset.exifInfo?.make,
+            cameraModel: asset.exifInfo?.model,
+            exifIsAuthoritative: exifIsAuthoritative
+        )
+    }
+
+    static func isScreenshot(originalFileName: String,
+                             cameraMake: String?,
+                             cameraModel: String?,
+                             exifIsAuthoritative: Bool) -> Bool? {
+        if matchesScreenshotFilename(originalFileName) { return true }
 
         // 3) PNG without camera make/model → very likely a screenshot
-        let ext = (asset.originalFileName as NSString).pathExtension.lowercased()
+        let ext = (originalFileName as NSString).pathExtension.lowercased()
         guard ext == "png" else { return false }
 
         // Nur PNGs kommen überhaupt an Kriterium 3 — für alles andere steht das Nein
         // schon fest, unabhängig vom Gate.
         guard exifIsAuthoritative else { return nil }
 
-        let make = (asset.exifInfo?.make ?? "").trimmingCharacters(in: .whitespaces)
-        let model = (asset.exifInfo?.model ?? "").trimmingCharacters(in: .whitespaces)
+        let make = (cameraMake ?? "").trimmingCharacters(in: .whitespaces)
+        let model = (cameraModel ?? "").trimmingCharacters(in: .whitespaces)
         return make.isEmpty && model.isEmpty
+    }
+
+    /// Prüft anhand der im Grid-Index verfügbaren Spalten, ob eine Waise ein
+    /// Bildschirmfoto, eine Bildschirmaufnahme oder ein typisches Messenger-/Download-Bild ohne EXIF ist.
+    static func isGeoScreenshotOrRecording(originalFileName: String,
+                                           cameraMake: String?,
+                                           cameraModel: String?,
+                                           fileSizeInByte: Int? = nil) -> Bool {
+        if isScreenshot(originalFileName: originalFileName,
+                        cameraMake: cameraMake,
+                        cameraModel: cameraModel,
+                        exifIsAuthoritative: true) == true {
+            return true
+        }
+        let lower = originalFileName.lowercased()
+        if lower.contains("screenrecording") || lower.contains("bildschirmaufnahme") {
+            return true
+        }
+
+        // Messenger- und Web-Downloads ohne Kamera-EXIF (WhatsApp, Signal, Telegram, UUID-Exporte)
+        let make = (cameraMake ?? "").trimmingCharacters(in: .whitespaces)
+        let model = (cameraModel ?? "").trimmingCharacters(in: .whitespaces)
+        guard make.isEmpty && model.isEmpty else { return false }
+
+        let ext = (lower as NSString).pathExtension
+        if ext == "webp" || ext == "gif" { return true }
+
+        if lower.contains("whatsapp")
+            || lower.range(of: #"(^|-)img-\d{8}-wa\d+\."#, options: .regularExpression) != nil
+            || lower.range(of: #"(^|-)(fb_img_|signal-|snapchat-)"#, options: .regularExpression) != nil
+            || lower.range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|heic|png)$"#, options: .regularExpression) != nil {
+            return true
+        }
+
+        if let fileSizeInByte, fileSizeInByte > 0, fileSizeInByte <= 500 * 1024 {
+            return true
+        }
+
+        return false
     }
 
     /// Zweiwertige Fassade für Aufrufer ohne Gate-Wissen (`AssetFilter`, `HighlightScorer`).

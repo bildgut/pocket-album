@@ -25,6 +25,8 @@ final class AssetRepository {
     
     private(set) var favoritesSubtitle: String = ""
     private(set) var librarySubtitle: String = ""
+    /// Optionaler Rückruf, sobald Panoramen im Hintergrund geladen wurden.
+    var onPanoramasLoaded: (@MainActor ([Asset]) -> Void)?
 
     // MARK: - Internal State
     private let apiClient: ImmichAPIClient
@@ -82,11 +84,11 @@ final class AssetRepository {
             hasMore = localOffset < localVisibleTotal
             self.cachedAssets = firstPage
             self.totalCount = localVisibleTotal
-            
-            // Seed panoramaAssets directly from SQLite
-            let sqlitePanoramas = gridIndex.loadPanoramas()
-            self.panoramaAssets = sqlitePanoramas
-            
+
+            // Sofort an `MainView` melden, damit `libraryDataSource` nicht erst auf
+            // den asynchronen Statistik-/Favoriten-/Panorama-Durchlauf in `recomputeDerivedArrays()`
+            // warten muss (`loadPanoramas` kostete synchron ~16 ms = 70 % von LoadAssetsFromCache).
+            self.forceRefreshTrigger = UUID()
             self.recomputeDerivedArrays()
             os_signpost(.end, log: AppLogger.dataPerf, name: "LoadAssetsFromCache", signpostID: signpostID,
                         "%d/%d assets from grid index", firstPage.count, localVisibleTotal)
@@ -314,18 +316,19 @@ final class AssetRepository {
         let snapshot = cachedAssets
 
         derivedStateTask = Task {
-            // Run all SQLite queries off the main thread in a single readQueue lock.
-            let result = await Task.detached(priority: .userInitiated) { [gridIndex] () -> (favs: [Asset], vids: [Asset], libSub: String, favSub: String) in
+            // Run all SQLite queries off the main thread.
+            let result = await Task.detached(priority: .userInitiated) { [gridIndex] () -> (favs: [Asset], vids: [Asset], panos: [Asset], libSub: String, favSub: String) in
                 if gridIndex.countVisible() > 0 {
-                    // One readQueue.sync round-trip instead of five separate ones.
                     let derived = gridIndex.loadDerivedCollections()
+                    let panos = gridIndex.loadPanoramas()
                     let libSub = Self.buildSubtitle(from: derived.libStats)
                     let favSub = Self.buildSubtitle(from: derived.favStats)
-                    return (derived.favorites, derived.videos, libSub, favSub)
+                    return (derived.favorites, derived.videos, panos, libSub, favSub)
                 } else {
                     let favs = snapshot.filter { $0.isFavorite }
                     let vids = snapshot.filter { $0.isVideo }
-                    return (favs, vids, "", "")
+                    let panos = snapshot.filter { MediaType.panoramas.matches($0) }
+                    return (favs, vids, panos, "", "")
                 }
             }.value
 
@@ -333,6 +336,8 @@ final class AssetRepository {
 
             self.favoriteAssets    = result.favs
             self.videoAssets       = result.vids
+            self.panoramaAssets    = result.panos
+            self.onPanoramasLoaded?(result.panos)
             self.librarySubtitle   = result.libSub
             self.favoritesSubtitle = result.favSub
             self.forceRefreshTrigger = UUID()
@@ -485,7 +490,8 @@ final class AssetRepository {
         }
 
         let delta = await Task.detached(priority: .userInitiated) { [gridIndex] in
-            let visibleChanged = gridIndex.loadVisible(ids: changedIDs)
+            // Wie `loadVisiblePage`: Stapel-Kinder gehören nicht ins Raster.
+            let visibleChanged = gridIndex.loadVisible(ids: changedIDs, ohneStapelKinder: true)
             let visibleMap = Dictionary(uniqueKeysWithValues: visibleChanged.map { ($0.id, $0) })
             let visibleTotal = gridIndex.countVisible()
             return (visibleMap, visibleTotal)

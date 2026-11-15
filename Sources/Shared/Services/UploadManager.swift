@@ -132,8 +132,14 @@ final class UploadManager {
     nonisolated private static let checksumSampleRate: Double = 0.10
 
     private let apiClient: ImmichAPIClient
-    private let maxConcurrent = 3
+    private let defaults: UserDefaults
+    /// Bei jedem Aufruf frisch gelesen: Ein geänderter Regler greift schon im laufenden
+    /// Upload, ohne Neustart.
+    var maxConcurrent: Int { UploadParallelitaet.wert(defaults: defaults) }
     private var completionHandlers: [UUID: (Result<String, Error>) -> Void] = [:]
+    /// Laufende `upload`-Tasks je Item — nur so lässt sich ein Apple-Fotos-Lauf mitten
+    /// in einer Übertragung abbrechen (`cancelApplePhotoUploads`).
+    private var uploadTasks: [UUID: Task<Void, Never>] = [:]
 
     // SwiftData context for persistent queue (optional – set after init by the owning view)
     var modelContext: ModelContext?
@@ -142,9 +148,14 @@ final class UploadManager {
     /// Injizierbar für Tests (1.0 = jeder Upload wird geprüft).
     private let checksumSampleRate: Double
 
-    init(apiClient: ImmichAPIClient, checksumSampleRate: Double = UploadManager.checksumSampleRate) {
+    init(
+        apiClient: ImmichAPIClient,
+        checksumSampleRate: Double = UploadManager.checksumSampleRate,
+        defaults: UserDefaults = AppEnvironment.defaults
+    ) {
         self.apiClient = apiClient
         self.checksumSampleRate = checksumSampleRate
+        self.defaults = defaults
     }
 
     // MARK: - Restore on launch
@@ -313,11 +324,26 @@ final class UploadManager {
         }
 
         for item in claimed.map({ items[$0] }) {
-            Task { await upload(item) }
+            uploadTasks[item.id] = Task { await upload(item) }
+        }
+    }
+
+    /// Bricht alle Apple-Fotos-Übertragungen ab: laufende per Task-Abbruch (URLSession
+    /// wirft dann `.cancelled`), noch wartende fallen aus der Warteschlange. Beide
+    /// melden sich mit `CancellationError` zurück, ohne als Fehlschlag zu zählen.
+    func cancelApplePhotoUploads() {
+        for item in items where item.sourceLocalIdentifier != nil && !Self.isFinished(item) {
+            if let task = uploadTasks[item.id] {
+                task.cancel()
+            } else {
+                items.removeAll { $0.id == item.id }
+                completionHandlers.removeValue(forKey: item.id)?(.failure(CancellationError()))
+            }
         }
     }
 
     private func upload(_ item: UploadItem) async {
+        defer { uploadTasks.removeValue(forKey: item.id) }
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         // `processQueue` hat das Item bereits belegt; die Zuweisung hält `upload`
         // für sich genommen vollständig und ist ein reiner Selbstläufer.
@@ -495,6 +521,11 @@ final class UploadManager {
                     )
                 }
             }
+        } catch where Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+            // Vom Nutzer abgebrochen (Apple-Fotos-Lauf): kein Fehlschlag, kein Wiederholen.
+            AppLogger.upload.info("Upload '\(item.fileName)' abgebrochen")
+            items.removeAll { $0.id == item.id }
+            completionHandlers.removeValue(forKey: item.id)?(.failure(CancellationError()))
         } catch {
             let currentRetry = items.first(where: { $0.id == item.id })?.retryCount ?? 0
             let canRetry = item.isPersisted
@@ -911,6 +942,10 @@ struct ApplePhotosSyncPreviewItem: Identifiable, Hashable, Sendable {
     let duration: TimeInterval
     let status: ApplePhotosSyncPreviewStatus
     let lastError: String?
+    var isScreenshot: Bool = false
+    var isFavorite: Bool = false
+    var fileSize: Int64? = nil
+    var burstIdentifier: String? = nil
 }
 
 struct ApplePhotosSyncPlan: Sendable {
@@ -974,9 +1009,35 @@ enum ApplePhotosReuploadDecision: Equatable, Sendable {
     }
 }
 
+/// Prüft die Bedingungen für den automatischen Hintergrund-Sync („Auto-Pilot"):
+/// Pausiert auf Wunsch im Energiesparmodus oder auf teuren/eingeschränkten Verbindungen
+/// (z. B. persönlicher Hotspot unterwegs).
+enum ApplePhotosAutoPilotGate {
+    static let pauseOnLowPowerKey = "applePhotosAutoSyncPauseOnLowPower"
+    static let pauseOnHotspotKey = "applePhotosAutoSyncPauseOnHotspot"
+
+    static func darfStarten(
+        defaults: UserDefaults = AppEnvironment.defaults,
+        istEnergiesparmodus: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled,
+        istTeureVerbindung: Bool = false
+    ) -> (erlaubt: Bool, grund: String?) {
+        let pauseLowPower = (defaults.object(forKey: pauseOnLowPowerKey) as? Bool) ?? true
+        if pauseLowPower && istEnergiesparmodus {
+            return (false, "Pausiert im Energiesparmodus")
+        }
+        let pauseHotspot = (defaults.object(forKey: pauseOnHotspotKey) as? Bool) ?? true
+        if pauseHotspot && istTeureVerbindung {
+            return (false, "Pausiert auf Hotspot / teurer Verbindung")
+        }
+        return (true, nil)
+    }
+}
+
 /// Manual sync of Apple Photos assets into Immich uploads.
 @MainActor
 final class ApplePhotosSyncManager {
+    static let excludeScreenshotsKey = "applePhotosExcludeScreenshots"
+
     private let modelContext: ModelContext
     private let uploadManager: UploadManager
     private let apiClient: ImmichAPIClient
@@ -985,6 +1046,35 @@ final class ApplePhotosSyncManager {
     private let deltaSafetyBuffer: TimeInterval = 10 * 60
     private let maxPerAssetAttempts = 3
     private let perAssetRetryDelays: [TimeInterval] = [5, 30, 120]
+
+    /// Gesetzt von `halteAn()`: Der Lauf nimmt kein weiteres Foto auf, lässt die bis
+    /// zu drei laufenden fertig werden und endet dann regulär — samt Löschphase.
+    private(set) var anhaltenAngefordert = false
+
+    /// Gesetzt von `brecheAb()`: wie Anhalten, aber die laufenden Übertragungen werden
+    /// sofort abgebrochen statt abgewartet.
+    private(set) var abbruchAngefordert = false
+
+    /// Kurzlebiger Cache für den lokalen Dateinamen-Index, damit Zeitraum-Wechsel im
+    /// Vorschau-Fenster und das anschließende „Sichern" nicht jedes Mal erneut 112 000+
+    /// Datensätze einlesen müssen.
+    private var cachedFilenameIndex: (builtAt: Date, index: [String: [(id: String, createdAt: String)]])?
+
+    private static let isoFullFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoBasicFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private var vormerkung: ApplePhotosVerwerfVormerkung {
+        ApplePhotosVerwerfVormerkung(defaults: AppEnvironment.defaults)
+    }
 
     private struct ApplePhotoCandidate {
         let asset: PHAsset
@@ -1007,9 +1097,11 @@ final class ApplePhotosSyncManager {
 
     private enum ApplePhotoProcessResult {
         case skippedMappingSeeded
-        case alreadyPresent
-        case uploaded
+        case alreadyPresent(String)
+        case uploaded(String)
         case failed(String)
+        /// Vom Nutzer abgebrochen — weder Erfolg noch Fehlschlag, nichts wird vermerkt.
+        case abgebrochen
     }
 
     init(modelContext: ModelContext, uploadManager: UploadManager, apiClient: ImmichAPIClient) {
@@ -1043,6 +1135,10 @@ final class ApplePhotosSyncManager {
 
     /// - Parameter advanceBaseline: nur `true` wenn die zugrundeliegende Vorschau
     ///   den kompletten Zeitraum seit dem letzten Sync abdeckte ("Seit letztem Sync").
+    /// - Parameter verwerfen: wird vorgemerkt (`ApplePhotosVerwerfVormerkung`) und
+    ///   zusammen mit noch ausstehenden Verworfenen früherer, unterbrochener Läufe
+    ///   am Laufende gelöscht. Nur dieser Weg holt Vorgemerktes nach — ein stiller
+    ///   Hintergrund-Sync soll keine Löschrückfrage von macOS auslösen.
     @discardableResult
     func syncSelected(
         localIdentifiers: Set<String>,
@@ -1050,16 +1146,39 @@ final class ApplePhotosSyncManager {
         verwerfen: [ApplePhotoVerwerfKandidat] = [],
         callerFile: String = #fileID,
         callerLine: Int = #line
-    ) async -> ApplePhotoDeletionOutcome? {
-        guard !localIdentifiers.isEmpty else { return nil }
+    ) async -> ApplePhotosLaufErgebnis? {
+        // Alles verworfen ist ein gültiger Lauf: nichts hochzuladen, nur zu löschen.
+        guard !localIdentifiers.isEmpty || !verwerfen.isEmpty else { return nil }
+        vormerkung.merke(verwerfen)
         return await runSync(
             forceFullSync: false,
             recentDays: nil,
             selectedLocalIdentifiers: localIdentifiers,
             advanceBaseline: advanceBaseline,
-            verwerfen: verwerfen,
+            verwerfen: vormerkung.ausstehend(),
             origin: "\(callerFile):\(callerLine)"
         )
+    }
+
+    /// Hält den laufenden Lauf nach den gerade übertragenen Fotos an. Was bis dahin
+    /// gesichert ist, bleibt gesichert; „Seit letztem Sync" rückt nicht vor, der Rest
+    /// erscheint also beim nächsten Prüfen wieder.
+    func halteAn() {
+        guard fetchOrCreateState().isRunning, !anhaltenAngefordert else { return }
+        anhaltenAngefordert = true
+        AppLogger.upload.info("AppleSync: Anhalten angefordert")
+    }
+
+    /// Bricht den laufenden Lauf sofort ab: Die gerade übertragenen Fotos (auch ein
+    /// hängendes Video) werden verworfen und erscheinen beim nächsten Prüfen wieder.
+    /// Was bis dahin fertig gesichert ist, bleibt gesichert und kommt wie bei
+    /// `halteAn()` in die Löschphase.
+    func brecheAb() {
+        guard fetchOrCreateState().isRunning else { return }
+        anhaltenAngefordert = true
+        abbruchAngefordert = true
+        AppLogger.upload.info("AppleSync: Abbruch angefordert")
+        uploadManager.cancelApplePhotoUploads()
     }
 
     func previewSync(
@@ -1174,7 +1293,11 @@ final class ApplePhotosSyncManager {
                     isLivePhoto: candidate.asset.mediaSubtypes.contains(.photoLive),
                     duration: candidate.asset.duration,
                     status: retryIds.contains(candidate.localIdentifier) ? .retry : .new,
-                    lastError: candidate.lastError
+                    lastError: candidate.lastError,
+                    isScreenshot: candidate.asset.mediaSubtypes.contains(.photoScreenshot),
+                    isFavorite: candidate.asset.isFavorite,
+                    fileSize: candidate.resourceFileSize,
+                    burstIdentifier: candidate.asset.burstIdentifier
                 )
             )
         }
@@ -1266,6 +1389,8 @@ final class ApplePhotosSyncManager {
             modelContext.delete(entry)
             removed += 1
         }
+        // Wer ein Foto zurückholt, will es nicht mehr gelöscht haben.
+        vormerkung.entferne(localIdentifiers)
         guard removed > 0 else { return }
         saveState()
         AppLogger.upload.info("AppleSync: \(removed) Asset(s) wieder freigegeben")
@@ -1273,6 +1398,7 @@ final class ApplePhotosSyncManager {
 
     func clearAllIgnored() {
         let ignored = (try? modelContext.fetch(FetchDescriptor<ApplePhotosIgnoredAsset>())) ?? []
+        vormerkung.leere()
         guard !ignored.isEmpty else { return }
         for entry in ignored {
             modelContext.delete(entry)
@@ -1336,6 +1462,55 @@ final class ApplePhotosSyncManager {
     }
 
     @discardableResult
+    /// Die Reihenfolge eines Laufs: erst die Wiederholungen, dann die übrigen Kandidaten,
+    /// jede Kennung nur einmal.
+    ///
+    /// Bewusst **eine** Liste für **eine** Aufgabengruppe. Bis November 2026 liefen die
+    /// Wiederholungen als eigene Runde vorweg, und die neuen Kandidaten begannen erst, wenn
+    /// die letzte Wiederholung fertig war. Mit einem einzigen fehlgeschlagenen Video war
+    /// das eine Runde mit genau einem Platz: In Korea stand „0 von 160 gesichert“
+    /// minutenlang still, während ein Video allein mit 12 Mbit/s hochlief und sieben
+    /// freie Plätze ungenutzt blieben. Vorne in der Liste starten Wiederholungen weiter
+    /// zuerst — sie blockieren nur nicht mehr den Rest.
+    nonisolated static func laufReihenfolge<Kandidat>(
+        wiederholungen: [Kandidat],
+        kandidaten: [Kandidat],
+        id: (Kandidat) -> String
+    ) -> [Kandidat] {
+        var gesehen = Set<String>()
+        return (wiederholungen + kandidaten).filter { gesehen.insert(id($0)).inserted }
+    }
+
+    /// Kleinste Dateien zuerst — damit unterwegs möglichst viele Fotos oben sind, bevor
+    /// die Verbindung abreißt oder der Deckel zugeht.
+    ///
+    /// Vorher lief alles nach Aufnahmedatum, und ein großes Video hielt die Fotos
+    /// dahinter auf. Nach Größe ergibt sich JPG/HEIC → RAW → Videos (kurze vor langen)
+    /// von selbst. Die Größe kommt per KVC (`resourceFileSize`) und kann fehlen: Solche
+    /// Dateien stehen am Ende, Fotos vor Videos. Gleich große behalten ihre bisherige
+    /// Reihenfolge — `sorted` ist nicht stabil, deshalb der Index als letzter Schlüssel.
+    nonisolated static func kleinsteZuerst<Kandidat>(
+        _ liste: [Kandidat],
+        groesse: (Kandidat) -> Int64?,
+        istVideo: (Kandidat) -> Bool
+    ) -> [Kandidat] {
+        liste.enumerated()
+            .sorted { links, rechts in
+                let (a, b) = (groesse(links.element), groesse(rechts.element))
+                switch (a, b) {
+                case let (a?, b?) where a != b: return a < b
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil):
+                    let (va, vb) = (istVideo(links.element), istVideo(rechts.element))
+                    if va != vb { return !va }
+                default: break
+                }
+                return links.offset < rechts.offset
+            }
+            .map(\.element)
+    }
+
     private func runSync(
         forceFullSync: Bool,
         recentDays: Int?,
@@ -1343,7 +1518,7 @@ final class ApplePhotosSyncManager {
         advanceBaseline: Bool,
         verwerfen: [ApplePhotoVerwerfKandidat] = [],
         origin: String
-    ) async -> ApplePhotoDeletionOutcome? {
+    ) async -> ApplePhotosLaufErgebnis? {
         let state = fetchOrCreateState()
         guard !state.isRunning else {
             AppLogger.upload.info("AppleSync: Lauf aus \(origin) übersprungen — Sync läuft bereits")
@@ -1355,6 +1530,8 @@ final class ApplePhotosSyncManager {
         state.isRunning = true
         state.lastAttemptAt = Date()
         state.lastError = nil
+        anhaltenAngefordert = false
+        abbruchAngefordert = false
         saveState()
         notifyProgress(state)
 
@@ -1407,17 +1584,24 @@ final class ApplePhotosSyncManager {
                 ? await buildLocalFilenameIndex() : [:]
             state.lastRunRetriedCount = retryCandidates.count
             if !retryCandidates.isEmpty {
-                AppLogger.upload.info("AppleSync: retrying \(retryCandidates.count) persisted failure(s) before normal candidates")
+                AppLogger.upload.info("AppleSync: retrying \(retryCandidates.count) persisted failure(s), queued ahead of normal candidates")
             }
 
-            var processedLocalIdentifiers = Set<String>()
             var newlyMappedLocalIdentifiers = Set<String>()
-            if !retryCandidates.isEmpty {
+            var syncedImmichIdByLocalId: [String: String] = [:]
+            let nachGroesse: ([ApplePhotoCandidate]) -> [ApplePhotoCandidate] = {
+                Self.kleinsteZuerst($0, groesse: \.resourceFileSize, istVideo: { $0.asset.mediaType == .video })
+            }
+            let laufKandidaten = Self.laufReihenfolge(
+                wiederholungen: nachGroesse(retryCandidates),
+                kandidaten: nachGroesse(candidates),
+                id: \.localIdentifier
+            )
+            if !laufKandidaten.isEmpty {
                 try await withThrowingTaskGroup(of: (ApplePhotoCandidate, ApplePhotoProcessResult).self) { group in
-                    var iterator = retryCandidates.makeIterator()
-                    for _ in 0..<3 {
-                        if let candidate = iterator.next() {
-                            processedLocalIdentifiers.insert(candidate.localIdentifier)
+                    var iterator = laufKandidaten.makeIterator()
+                    for _ in 0..<self.uploadManager.maxConcurrent {
+                        if !self.anhaltenAngefordert, let candidate = iterator.next() {
                             group.addTask { @MainActor in
                                 let result = await self.processCandidate(
                                     candidate,
@@ -1430,11 +1614,11 @@ final class ApplePhotosSyncManager {
                         }
                     }
                     while let (candidate, result) = try await group.next() {
-                        if self.apply(result: result, for: candidate, to: state) {
+                        if let immichId = self.apply(result: result, for: candidate, to: state) {
                             newlyMappedLocalIdentifiers.insert(candidate.localIdentifier)
+                            syncedImmichIdByLocalId[candidate.localIdentifier] = immichId
                         }
-                        if let nextCandidate = iterator.next() {
-                            processedLocalIdentifiers.insert(nextCandidate.localIdentifier)
+                        if !self.anhaltenAngefordert, let nextCandidate = iterator.next() {
                             group.addTask { @MainActor in
                                 let result = await self.processCandidate(
                                     nextCandidate,
@@ -1449,61 +1633,49 @@ final class ApplePhotosSyncManager {
                 }
             }
 
-            let remainingCandidates = candidates.filter { !processedLocalIdentifiers.contains($0.localIdentifier) }
-            if !remainingCandidates.isEmpty {
-                try await withThrowingTaskGroup(of: (ApplePhotoCandidate, ApplePhotoProcessResult).self) { group in
-                    var iterator = remainingCandidates.makeIterator()
-                    for _ in 0..<3 {
-                        if let candidate = iterator.next() {
-                            group.addTask { @MainActor in
-                                let result = await self.processCandidate(
-                                    candidate,
-                                    localIndex: localIndex,
-                                    mappings: mappings,
-                                    runDirectory: runDirectory
-                                )
-                                return (candidate, result)
-                            }
-                        }
-                    }
-                    while let (candidate, result) = try await group.next() {
-                        if self.apply(result: result, for: candidate, to: state) {
-                            newlyMappedLocalIdentifiers.insert(candidate.localIdentifier)
-                        }
-                        if let nextCandidate = iterator.next() {
-                            group.addTask { @MainActor in
-                                let result = await self.processCandidate(
-                                    nextCandidate,
-                                    localIndex: localIndex,
-                                    mappings: mappings,
-                                    runDirectory: runDirectory
-                                )
-                                return (nextCandidate, result)
-                            }
-                        }
-                    }
-                }
+            if !syncedImmichIdByLocalId.isEmpty && !abbruchAngefordert {
+                await propagateToPairedAlbums(syncedImmichIdByLocalId: syncedImmichIdByLocalId)
             }
 
-            if advanceBaseline {
+            let angehalten = anhaltenAngefordert
+            anhaltenAngefordert = false
+            abbruchAngefordert = false
+            // Angehalten deckt den Zeitraum nicht ab — die Baseline bleibt stehen.
+            if advanceBaseline, !angehalten {
                 state.lastSuccessfulSyncAt = Date()
             }
+            if angehalten {
+                AppLogger.upload.info("AppleSync: Lauf angehalten — \(state.lastRunEnqueuedCount) hochgeladen, \(state.lastRunAlreadyPresentCount) vorhanden, \(state.lastRunFailedCount) fehlgeschlagen")
+            }
             state.isRunning = false
+            if state.lastRunEnqueuedCount > 0 {
+                cachedFilenameIndex = nil
+            }
             refreshPendingFailureCount(state)
             saveState()
             notifyProgress(state)
 
-            // Nur hier, am Ende eines vollständig durchgelaufenen Laufs, wird
-            // gelöscht — auch das Verwerfen abgewählter Fotos. Abbruch, Fehler oder
-            // ein gar nicht gestarteter Lauf erreichen diese Zeile nie.
-            return await ApplePhotoDeletionService(modelContext: modelContext, apiClient: apiClient)
+            // Nur hier, am Ende eines durchgelaufenen oder bewusst angehaltenen Laufs,
+            // wird gelöscht — auch das Verwerfen abgewählter Fotos. Beim Anhalten ist
+            // jedes neu gemappte Foto fertig hochgeladen und wird ohnehin byte-genau
+            // geprüft; Fehler oder ein beendetes Programm erreichen diese Zeile nie,
+            // dafür bleiben Verworfene vorgemerkt.
+            let löschung = await ApplePhotoDeletionService(modelContext: modelContext, apiClient: apiClient)
                 .considerDeletion(
                     newlyMappedLocalIdentifiers: newlyMappedLocalIdentifiers,
                     verwerfen: verwerfen
                 )
+            // Auch bei abgelehnter macOS-Rückfrage: Sonst fragte jeder weitere Lauf erneut.
+            vormerkung.entferne(Set(verwerfen.map(\.localIdentifier)))
+            return ApplePhotosLaufErgebnis(angehalten: angehalten, löschung: löschung)
         } catch {
+            anhaltenAngefordert = false
+            abbruchAngefordert = false
             state.lastError = error.localizedDescription
             state.isRunning = false
+            if state.lastRunEnqueuedCount > 0 {
+                cachedFilenameIndex = nil
+            }
             refreshPendingFailureCount(state)
             saveState()
             notifyProgress(state)
@@ -1519,6 +1691,7 @@ final class ApplePhotosSyncManager {
     ) async -> ApplePhotoProcessResult {
         let existingMapping = mappings[candidate.localIdentifier]
         let hasExistingMapping = existingMapping != nil
+        let previousMainAssetId = existingMapping?.immichAssetId
 
         // Legacy mappings created before we tracked modification dates should
         // not be treated as edited assets immediately. Seed the timestamp once
@@ -1526,7 +1699,9 @@ final class ApplePhotosSyncManager {
         if let existingMapping, existingMapping.lastKnownModificationDate == nil {
             existingMapping.lastKnownModificationDate = candidate.modificationDate ?? candidate.creationDate
             existingMapping.lastUploadedFileSize = existingMapping.lastUploadedFileSize ?? candidate.resourceFileSize
-            removeFailure(localIdentifier: candidate.localIdentifier)
+            if candidate.isRetry {
+                removeFailure(localIdentifier: candidate.localIdentifier)
+            }
             AppLogger.upload.debug("AppleSync: seeded missing modification date for existing mapping \(candidate.originalFilename)")
             return .skippedMappingSeeded
         }
@@ -1544,16 +1719,24 @@ final class ApplePhotosSyncManager {
                 immichAssetId: existingId,
                 modificationDate: candidate.modificationDate ?? candidate.creationDate,
                 fileSize: candidate.resourceFileSize,
-                existingMappings: mappings
+                existingMappings: mappings,
+                saveImmediately: false
             )
-            removeFailure(localIdentifier: candidate.localIdentifier)
-            return .alreadyPresent
+            if candidate.isRetry {
+                removeFailure(localIdentifier: candidate.localIdentifier)
+            }
+            if candidate.asset.isFavorite {
+                try? await apiClient.toggleFavorite(assetId: existingId, isFavorite: true)
+                GridIndexStore.shared.updateFavorite(id: existingId, isFavorite: true)
+            }
+            return .alreadyPresent(existingId)
         }
 
         for attempt in 0..<maxPerAssetAttempts {
             var exportedURL: URL?
             do {
                 exportedURL = try await export(asset: candidate.asset, into: runDirectory)
+                if abbruchAngefordert { throw CancellationError() }
 
                 // Live Photo handling: upload paired video first, then link it.
                 // If the video keeps failing, continue with an image-only upload and
@@ -1626,6 +1809,7 @@ final class ApplePhotosSyncManager {
                 guard let exportedURL else {
                     throw ApplePhotosSyncError.exportFailed("Missing exported file URL.")
                 }
+                if abbruchAngefordert { throw CancellationError() }
                 let assetId = try await uploadApplePhoto(
                     url: exportedURL,
                     localIdentifier: candidate.localIdentifier,
@@ -1637,27 +1821,35 @@ final class ApplePhotosSyncManager {
                     immichAssetId: assetId,
                     modificationDate: candidate.modificationDate ?? candidate.creationDate,
                     fileSize: candidate.resourceFileSize,
-                    existingMappings: mappings
+                    existingMappings: mappings,
+                    saveImmediately: false
                 )
 
-                // If a RAW companion exists, stack it under the primary stylized HEIC:
-                if let rawAssetId {
-                    do {
-                        let stackId = try await apiClient.createStack(primaryAssetId: assetId, childAssetIds: [rawAssetId])
-                        AppLogger.upload.info("AppleSync: stacked RAW (\(rawAssetId)) under stylized primary (\(assetId)), stackId: \(stackId)")
-                        let badge = candidate.originalFilename.lowercased().hasSuffix(".heic") ? "HEIC + RAW" : "JPEG + RAW"
-                        GridIndexStore.shared.updateStack(primaryId: assetId, childIds: [rawAssetId], stackId: stackId, badgeText: badge)
-                    } catch {
-                        AppLogger.upload.warning("AppleSync: failed to create stack for \(assetId) and RAW \(rawAssetId): \(error.localizedDescription)")
-                    }
-                }
+                await stapleNachUpload(
+                    assetId: assetId,
+                    previousMainAssetId: previousMainAssetId,
+                    rawAssetId: rawAssetId,
+                    candidate: candidate,
+                    mappings: mappings
+                )
 
-                removeFailure(localIdentifier: candidate.localIdentifier)
+                if candidate.isRetry {
+                    removeFailure(localIdentifier: candidate.localIdentifier)
+                }
+                if candidate.asset.isFavorite {
+                    try? await apiClient.toggleFavorite(assetId: assetId, isFavorite: true)
+                    GridIndexStore.shared.updateFavorite(id: assetId, isFavorite: true)
+                }
                 AppLogger.upload.info("AppleSync: uploaded \(candidate.originalFilename) → \(assetId)")
-                return .uploaded
+                return .uploaded(assetId)
             } catch {
                 if let exportedURL {
                     try? FileManager.default.removeItem(at: exportedURL)
+                }
+
+                if abbruchAngefordert || error is CancellationError {
+                    AppLogger.upload.info("AppleSync: \(candidate.originalFilename) abgebrochen")
+                    return .abgebrochen
                 }
 
                 if attempt < maxPerAssetAttempts - 1 {
@@ -1679,21 +1871,23 @@ final class ApplePhotosSyncManager {
         return .failed(fallbackMessage)
     }
 
-    /// - Returns: `true`, wenn dieses Ergebnis bedeutet, dass `candidate.localIdentifier`
+    /// - Returns: Die verknüpfte `immichAssetId`, wenn `candidate.localIdentifier`
     ///   in diesem Lauf neu mit Immich verknüpft wurde (Kandidat für die automatische
-    ///   Apple-Photos-Löschung) — `false` für reine Metadaten-Seeds oder Fehler.
+    ///   Apple-Photos-Löschung und verknüpfte Alben) — `nil` für reine Metadaten-Seeds oder Fehler.
     @discardableResult
-    private func apply(result: ApplePhotoProcessResult, for candidate: ApplePhotoCandidate, to state: ApplePhotosSyncState) -> Bool {
-        var isNewMapping = false
+    private func apply(result: ApplePhotoProcessResult, for candidate: ApplePhotoCandidate, to state: ApplePhotosSyncState) -> String? {
+        var newMappedImmichId: String? = nil
         switch result {
         case .skippedMappingSeeded:
             state.lastRunSkippedByMappingCount += 1
-        case .alreadyPresent:
+        case .alreadyPresent(let immichId):
             state.lastRunAlreadyPresentCount += 1
-            isNewMapping = true
-        case .uploaded:
+            newMappedImmichId = immichId
+        case .uploaded(let immichId):
             state.lastRunEnqueuedCount += 1
-            isNewMapping = true
+            newMappedImmichId = immichId
+        case .abgebrochen:
+            break
         case .failed(let message):
             state.lastRunFailedCount += 1
             SyncLogStore.shared.append(
@@ -1705,20 +1899,82 @@ final class ApplePhotosSyncManager {
                 )
             )
         }
-        refreshPendingFailureCount(state)
+        if candidate.isRetry || state.lastRunFailedCount > 0 {
+            refreshPendingFailureCount(state)
+        }
         saveState()
         notifyProgress(state)
-        return isNewMapping
+        return newMappedImmichId
     }
 
-    /// Builds a filename → [(assetId, fileCreatedAt)] lookup from the local SwiftData cache.
+    /// Nimmt neu gesicherte Fotos automatisch in bereits verknüpfte Immich-Alben
+    /// (`SyncPairing`) auf, falls das Foto in Apple Fotos im jeweiligen Album liegt.
+    private func propagateToPairedAlbums(syncedImmichIdByLocalId: [String: String]) async {
+        let pairings = (try? modelContext.fetch(FetchDescriptor<SyncPairing>())) ?? []
+        guard !pairings.isEmpty else { return }
+
+        let appleAlbumIds = pairings.map(\.appleAlbumLocalIdentifier)
+        let syncedLocalIds = Set(syncedImmichIdByLocalId.keys)
+
+        let matchedLocalIdsByAlbum: [String: [String]] = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                var result: [String: [String]] = [:]
+                let collections = PHAssetCollection.fetchAssetCollections(
+                    withLocalIdentifiers: appleAlbumIds,
+                    options: nil
+                )
+                collections.enumerateObjects { collection, _, _ in
+                    var matches: [String] = []
+                    PHAsset.fetchAssets(in: collection, options: nil).enumerateObjects { asset, _, _ in
+                        if syncedLocalIds.contains(asset.localIdentifier) {
+                            matches.append(asset.localIdentifier)
+                        }
+                    }
+                    if !matches.isEmpty {
+                        result[collection.localIdentifier] = matches
+                    }
+                }
+                continuation.resume(returning: result)
+            }
+        }
+
+        guard !matchedLocalIdsByAlbum.isEmpty else { return }
+        var didUpdateAlbums = false
+
+        for pairing in pairings {
+            guard let matchedLocalIds = matchedLocalIdsByAlbum[pairing.appleAlbumLocalIdentifier] else { continue }
+            let immichIds = matchedLocalIds.compactMap { syncedImmichIdByLocalId[$0] }
+            guard !immichIds.isEmpty else { continue }
+            do {
+                try await apiClient.addAssetsToAlbum(albumId: pairing.immichAlbumId, assetIds: immichIds)
+                pairing.lastSyncedAt = .now
+                didUpdateAlbums = true
+                AppLogger.upload.info("AppleSync: automatically added \(immichIds.count) asset(s) to paired album '\(pairing.immichAlbumName)'")
+            } catch {
+                AppLogger.upload.warning("AppleSync: failed to auto-add assets to paired album '\(pairing.immichAlbumName)': \(error.localizedDescription)")
+            }
+        }
+
+        if didUpdateAlbums {
+            saveState()
+            NotificationCenter.default.post(name: .albumsDidChange, object: nil)
+        }
+    }
+
+    /// Builds a filename → [(assetId, fileCreatedAt)] lookup from the local SQLite grid index
+    /// (with fallback to SwiftData `CachedAsset` if the grid index is empty).
     /// Includes trashed assets on purpose so Apple Photos sync does not try to
     /// re-upload items that still exist in Immich's trash.
-    /// Läuft über einen Background-ModelContext — bei großen Bibliotheken (100k+)
-    /// würde der Fetch auf dem Main Thread die UI sekundenlang einfrieren.
     private func buildLocalFilenameIndex() async -> [String: [(id: String, createdAt: String)]] {
+        if let cached = cachedFilenameIndex, Date().timeIntervalSince(cached.builtAt) < 15 {
+            return cached.index
+        }
         let container = modelContext.container
-        return await Task.detached(priority: .userInitiated) {
+        let built = await Task.detached(priority: .userInitiated) {
+            let fromGrid = GridIndexStore.shared.loadLocalSyncLookup().byFilename
+            if !fromGrid.isEmpty {
+                return fromGrid
+            }
             let backgroundContext = ModelContext(container)
             let cached = (try? backgroundContext.fetch(FetchDescriptor<CachedAsset>())) ?? []
             var index: [String: [(id: String, createdAt: String)]] = [:]
@@ -1727,6 +1983,8 @@ final class ApplePhotosSyncManager {
             }
             return index
         }.value
+        cachedFilenameIndex = (Date(), built)
+        return built
     }
 
     /// Returns the Immich asset ID if the local cache index contains a filename+date match.
@@ -1743,10 +2001,9 @@ final class ApplePhotosSyncManager {
         let entries = (index[filename] ?? []) + (index[prefixedFilename] ?? [])
         guard !entries.isEmpty else { return nil }
         let tolerance: TimeInterval = 60  // 1-minute slack for timezone/rounding differences
-        let isoFull = ISO8601DateFormatter(); isoFull.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let isoBasic = ISO8601DateFormatter(); isoBasic.formatOptions = [.withInternetDateTime]
         for entry in entries {
-            let serverDate = isoFull.date(from: entry.createdAt) ?? isoBasic.date(from: entry.createdAt)
+            let serverDate = Self.isoFullFormatter.date(from: entry.createdAt)
+                ?? Self.isoBasicFormatter.date(from: entry.createdAt)
             if let serverDate, abs(serverDate.timeIntervalSince(createdAt)) <= tolerance {
                 return entry.id
             }
@@ -1811,6 +2068,7 @@ final class ApplePhotosSyncManager {
         }
 
         let ignoredIdentifiers = loadIgnoredIdentifiers()
+        let excludeScreenshots = AppEnvironment.defaults.bool(forKey: Self.excludeScreenshotsKey)
 
         let candidateAssets: CandidateLoadResult = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -1890,10 +2148,12 @@ final class ApplePhotosSyncManager {
                     let modified = asset.modificationDate ?? asset.creationDate ?? .distantPast
                     let snapshot = snapshots[asset.localIdentifier]
 
-                    // Dauerhaft ignoriert → noch vor dem Mapping-Check raus, damit ein
-                    // ignoriertes Asset auch bei forceFullSync nie hochgeladen wird.
+                    // Dauerhaft ignoriert oder Screenshot-Ausschluss aktiv → noch vor dem Mapping-Check raus.
                     if ignoredIdentifiers.contains(asset.localIdentifier) {
                         ignoredCount += 1
+                        return
+                    }
+                    if excludeScreenshots && asset.mediaSubtypes.contains(.photoScreenshot) {
                         return
                     }
 
@@ -2046,7 +2306,8 @@ final class ApplePhotosSyncManager {
         immichAssetId: String,
         modificationDate: Date?,
         fileSize: Int64?,
-        existingMappings: [String: ApplePhotosAssetMapping]
+        existingMappings: [String: ApplePhotosAssetMapping],
+        saveImmediately: Bool = true
     ) {
         if let existing = existingMappings[localIdentifier] {
             existing.immichAssetId = immichAssetId
@@ -2063,7 +2324,9 @@ final class ApplePhotosSyncManager {
                 )
             )
         }
-        saveState()
+        if saveImmediately {
+            saveState()
+        }
     }
 
     private func loadFailureCandidates(now: Date, onlyDue: Bool, deleteMissing: Bool) -> [ApplePhotoCandidate] {
@@ -2276,6 +2539,85 @@ final class ApplePhotosSyncManager {
         return AppleResourcePicker.pairedVideo(PHAssetResource.assetResources(for: asset))
     }
 
+    /// Stapelt RAW-Hälfte und/oder die alte Fassung unter ein frisch
+    /// hochgeladenes Asset (`ApplePhotosNeuStapel`).
+    ///
+    /// Scheitert der volle Stapel — etwa weil die alte Fassung inzwischen im
+    /// Papierkorb liegt —, wird wenigstens das RAW wie früher gestapelt; sonst
+    /// verlöre ein bearbeitetes RAW+HEIC-Foto seine Paarung.
+    private func stapleNachUpload(
+        assetId: String,
+        previousMainAssetId: String?,
+        rawAssetId: String?,
+        candidate: ApplePhotoCandidate,
+        mappings: [String: ApplePhotosAssetMapping]
+    ) async {
+        var alterStapel: [String]?
+        if let previousMainAssetId, previousMainAssetId != assetId,
+           let (existingStackId, existingMembers) = await fetchStackInfo(for: previousMainAssetId) {
+            // Immich nimmt ein Kind eines fremden Stapels nicht mit; der alte
+            // Stapel wird deshalb aufgelöst und seine Mitglieder kommen mit.
+            do {
+                try await apiClient.deleteStack(stackId: existingStackId)
+                GridIndexStore.shared.removeStack(stackId: existingStackId)
+                alterStapel = existingMembers
+                AppLogger.upload.info("AppleSync: dissolved existing stack \(existingStackId) to re-stack with edited version \(assetId)")
+            } catch {
+                AppLogger.upload.warning("AppleSync: failed to delete previous stack \(existingStackId): \(error.localizedDescription)")
+                alterStapel = existingMembers
+            }
+        }
+
+        let childAssetIds = ApplePhotosNeuStapel.kinder(
+            neu: assetId,
+            vorher: previousMainAssetId,
+            alterStapel: alterStapel,
+            raw: rawAssetId
+        )
+        guard !childAssetIds.isEmpty else { return }
+
+        let rawIds = Set([rawAssetId, mappings[candidate.localIdentifier + "/raw"]?.immichAssetId].compactMap { $0 })
+        var versuche = [childAssetIds]
+        if let rawAssetId, rawAssetId != assetId, childAssetIds != [rawAssetId] {
+            versuche.append([rawAssetId])
+        }
+        for kinder in versuche {
+            do {
+                let stackId = try await apiClient.createStack(primaryAssetId: assetId, childAssetIds: kinder)
+                AppLogger.upload.info("AppleSync: stacked \(kinder.count) child asset(s) under primary (\(assetId)), stackId: \(stackId)")
+                let badge = ApplePhotosNeuStapel.badge(kinder: kinder, rawIds: rawIds, dateiname: candidate.originalFilename)
+                GridIndexStore.shared.updateStack(primaryId: assetId, childIds: kinder, stackId: stackId, badgeText: badge)
+                NotificationCenter.default.post(
+                    name: .assetsDidChange,
+                    object: nil,
+                    userInfo: ["ids": [assetId] + kinder]
+                )
+                NotificationCenter.default.post(name: .localAssetMutation, object: nil)
+                return
+            } catch {
+                AppLogger.upload.warning("AppleSync: failed to create stack for primary \(assetId) and children \(kinder): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Liefert stackId und Mitglieds-IDs für ein Asset, falls es bereits Teil eines Stacks ist.
+    private func fetchStackInfo(for assetId: String) async -> (stackId: String, memberIds: [String])? {
+        if let localStackId = GridIndexStore.shared.stackId(forAssetId: assetId) {
+            let members = GridIndexStore.shared.loadStackAssets(stackId: localStackId).map(\.id)
+            if !members.isEmpty {
+                return (localStackId, members)
+            }
+        }
+        // Fallback: Server API prüfen, falls der lokale Cache den Stack noch nicht kennt
+        if let detail = try? await apiClient.getAssetDetail(id: assetId), let serverStackId = detail.stackId {
+            if let allStacks = try? await apiClient.getStacks(),
+               let found = allStacks.first(where: { $0.id == serverStackId || $0.assets.contains(where: { $0.id == assetId }) }) {
+                return (found.id, found.assets.map(\.id))
+            }
+        }
+        return nil
+    }
+
     /// Returns the paired RAW resource for a RAW+HEIC/JPEG photo, if present.
     private func pairedRawResource(for asset: PHAsset) -> PHAssetResource? {
         guard asset.mediaType == .image else { return nil }
@@ -2323,7 +2665,7 @@ final class ApplePhotosSyncManager {
         guard let state = try? modelContext.fetch(descriptor).first, state.isRunning else { return }
         state.isRunning = false
         if state.lastError == nil || state.lastError?.isEmpty == true {
-            state.lastError = "Previous Apple Photos sync was interrupted."
+            state.lastError = "Der letzte Lauf wurde unterbrochen."
         }
         refreshPendingFailureCount(state)
         saveState()

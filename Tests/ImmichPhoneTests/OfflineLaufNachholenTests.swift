@@ -148,6 +148,28 @@ struct OfflineLaufNachholenTests {
         await m.warteAufEnde()
     }
 
+    /// Flugmodus mit VPN: Der Pfad ist erfüllt, führt aber nur in den Tunnel.
+    @Test func nachholenOhneNutzbaresNetzStartetKeinenLauf() async throws {
+        let a = "a-\(UUID().uuidString.prefix(8))"
+        let mitschnitt = server(["alb-a": [a]])
+        defer { aufraeumen() }
+        let c = try container(["alb-a"])
+        let m = await lader(teuer: nil)
+        await m.updateMeteredStatus(false, netzNutzbar: false)
+
+        await m.nachholen(container: c, apiClient: OrteMockURLProtocol.client(host: host))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(mitschnitt.alle.isEmpty)
+        #expect(await m.laeuft == false)
+        #expect(OfflineSyncProgress.shared.isActive == false)
+
+        // Netz zurück: Das Telefon ruft mit dem neuen Client erneut `nachholen` auf.
+        await m.updateMeteredStatus(false, netzNutzbar: true)
+        await m.nachholen(container: c, apiClient: OrteMockURLProtocol.client(host: host))
+        try await warteBis { try hatDatei(a, in: c) }
+        await m.warteAufEnde()
+    }
+
     @Test func unvollstaendigeVermerkeErkennen() throws {
         let c = try container(["neu", "fertig", "abgerissen"])
         let ctx = ModelContext(c)

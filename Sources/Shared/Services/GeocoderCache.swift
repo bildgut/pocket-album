@@ -26,6 +26,10 @@ actor GeocoderCache {
     /// Laufende Requests (damit parallele Anfragen für denselben Key nicht doppelt feuern)
     private var inFlight: [CoordKey: Task<String?, Never>] = [:]
 
+    /// Detaillierte Ortsauflösung (Stadt, Region, Land)
+    private var placeCache: [FineCoordKey: String?] = [:]
+    private var inFlightPlace: [FineCoordKey: Task<String?, Never>] = [:]
+
     /// Zeitstempel des letzten echten Geocoder-Calls
     private var lastRequestAt: Date = .distantPast
 
@@ -107,6 +111,69 @@ actor GeocoderCache {
         }
         return result
     }
+
+    /// Gibt „Stadt, Land" oder „Region, Land" für Koordinaten zurück.
+    func placeName(latitude: Double, longitude: Double) async -> String? {
+        let key = FineCoordKey(latitude: latitude, longitude: longitude)
+
+        if let cached = placeCache[key] { return cached }
+        if let task = inFlightPlace[key] { return await task.value }
+
+        let task = Task<String?, Never> {
+            await throttledGeocodePlace(key: key, latitude: latitude, longitude: longitude)
+        }
+        inFlightPlace[key] = task
+        let result = await task.value
+        inFlightPlace.removeValue(forKey: key)
+        return result
+    }
+
+    private func throttledGeocodePlace(key: FineCoordKey, latitude: Double, longitude: Double) async -> String? {
+        let now = Date()
+        let fireAt = max(now, lastRequestAt.addingTimeInterval(Self.minInterval))
+        lastRequestAt = fireAt
+        let wait = fireAt.timeIntervalSince(now)
+        if wait > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
+
+        let location = CLLocation(latitude: latitude, longitude: longitude)
+        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
+        let result: String?
+        let error: Error?
+        do {
+            let items = try await request.mapItems
+            if let first = items.first {
+                let rawDetail = first.placemark.areasOfInterest?.first ?? first.placemark.subLocality
+                let city = first.addressRepresentations?.cityName ?? first.placemark.locality
+                let region = first.addressRepresentations?.regionName ?? first.placemark.country ?? first.placemark.administrativeArea
+                let detail = rawDetail.flatMap { d in
+                    (!d.isEmpty && d != city && d != region) ? d : nil
+                }
+                if let city, !city.isEmpty, let region, !region.isEmpty, city != region {
+                    result = detail.map { "\($0) · \(city), \(region)" } ?? "\(city), \(region)"
+                } else if let city, !city.isEmpty {
+                    result = detail.map { "\($0), \(city)" } ?? city
+                } else if let region, !region.isEmpty {
+                    result = detail.map { "\($0) · \(region)" } ?? region
+                } else {
+                    result = detail ?? first.name
+                }
+            } else {
+                result = nil
+            }
+            error = nil
+        } catch let fehler {
+            result = nil
+            error = fehler
+        }
+
+        let istAntwort = error == nil || (error as? MKError)?.code == .placemarkNotFound
+        if istAntwort {
+            placeCache[key] = result
+        }
+        return result
+    }
 }
 
 // MARK: - CoordKey
@@ -119,5 +186,16 @@ private struct CoordKey: Hashable {
     init(location: CLLocation) {
         lat = Int(location.coordinate.latitude.rounded())
         lon = Int(location.coordinate.longitude.rounded())
+    }
+}
+
+/// Cache-Schlüssel: Koordinaten auf ca. 220 m gerastert (0.002°).
+private struct FineCoordKey: Hashable {
+    let lat: Int
+    let lon: Int
+
+    init(latitude: Double, longitude: Double) {
+        self.lat = Int((latitude * 500).rounded())
+        self.lon = Int((longitude * 500).rounded())
     }
 }

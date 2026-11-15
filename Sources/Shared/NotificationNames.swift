@@ -23,6 +23,9 @@ extension Notification.Name {
     /// überleben und sonst mit ungültigem Schlüssel weiterfragen würden
     /// (``InfoBildLauf``). Wird **synchron** auf dem Hauptthread zugestellt.
     static let connectionDidDisconnect = Notification.Name("connectionDidDisconnect")
+    /// Die aktive Server-Route hat zwischen Lokal (Primär-URL) und Remote (Externe URL)
+    /// gewechselt (`ImmichAPIClient.baseURL` wurde aktualisiert).
+    static let serverRouteDidChange = Notification.Name("serverRouteDidChange")
     /// Neue Zugangsdaten gehören zu einem anderen Konto; die lokalen Daten des
     /// vorigen sind bereits geleert (`ConnectionManager.beiKontoWechsel`).
     static let kontoGewechselt = Notification.Name("kontoGewechselt")
@@ -34,6 +37,8 @@ extension Notification.Name {
     static let showAddToAlbumSheet = Notification.Name("showAddToAlbumSheet")
     /// Kontextmenü → „Nach Kamera aufteilen …". userInfo: ["targetIds": [String]]
     static let kameraAufteilungRequested = Notification.Name("kameraAufteilungRequested")
+    /// Foto-Raster / Auswahlleiste → „Ort zuweisen…". userInfo: ["targetIds": [String]]
+    static let assignLocationRequested = Notification.Name("assignLocationRequested")
     static let albumsDidChange = Notification.Name("albumsDidChange")
     /// Das Kontextmenü bittet um „Aus Album entfernen"; die Rückfrage stellt das
     /// Raster, damit Menü und Auswahlleiste denselben Dialog zeigen.
@@ -42,6 +47,13 @@ extension Notification.Name {
     /// Opens the detail view for a specific album from anywhere in the app.
     /// userInfo: ["album": Album]
     static let openAlbumRequested = Notification.Name("openAlbumRequested")
+    /// Opens the tag view for a specific tag from anywhere in the app (e.g. Info Panel).
+    /// userInfo: ["tag": TagInfo]
+    static let openTagRequested = Notification.Name("openTagRequested")
+    /// Opens the place detail view for a city from anywhere in the app (e.g. Info Panel).
+    /// userInfo: ["city": String, "country": String?]
+    static let openPlaceRequested = Notification.Name("openPlaceRequested")
+    static let openPlaceDeepLink = Notification.Name("openPlaceDeepLink")
     static let immichDeepLinkOpened = Notification.Name("immichDeepLinkOpened")
     static let openPersonDeepLink = Notification.Name("openPersonDeepLink")
     /// Posted by SammlungenView to open a specific memory year in MemoriesView.
@@ -71,6 +83,11 @@ extension Notification.Name {
     /// Kopierte Entwicklungseinstellungen auf eine RAW-Auswahl schreiben (nur
     /// persistieren — entwickelt wird beim nächsten Öffnen bzw. Batch-Lauf).
     static let pasteDevelopSettingsRequested = Notification.Name("pasteDevelopSettingsRequested")
+    /// Ein Stapel-Vertreter hat sich geändert (Titelbildwechsel oder Löschen einer
+    /// einzelnen Stapel-Fassung): Ansichten wie `AlbumDetailView` ersetzen alte IDs
+    /// direkt an Ort und Stelle durch das neue `Asset`.
+    /// userInfo: ["replacements": [String: Asset]]
+    static let stackRepresentativeReplaced = Notification.Name("stackRepresentativeReplaced")
     /// KI-Zuschnitt → „Im Editor verfeinern": öffnet den Beschnitt-Editor der
     /// Detailansicht vorbefüllt (userInfo: assetId, rect als NSValue, aspect-RawValue).
 }

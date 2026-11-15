@@ -59,6 +59,7 @@ actor RawDevelopEngine {
         guard let filter = CIRAWFilter(imageURL: rawFileURL) else {
             throw RawDevelopEngineError.unsupportedFormat
         }
+        filter.baselineExposure = Self.startBaseline(datei: filter.baselineExposure)
         self.filter = filter
         self.asShotTemperature = Double(filter.neutralTemperature)
         self.asShotTint = Double(filter.neutralTint)
@@ -67,6 +68,24 @@ actor RawDevelopEngine {
             colorNR: filter.colorNoiseReductionAmount,
             sharpness: filter.sharpnessAmount
         )
+    }
+
+    // MARK: - Baseline-Exposure
+
+    /// Ab diesem `BaselineExposure` des DNG (EV) lässt die Engine den Ausgleich weg.
+    static let baselineSchwelle: Float = 0.3
+
+    /// Der Baseline-Wert, mit dem die Engine startet.
+    ///
+    /// Apples Entwickler hebt jedes Bild um den `BaselineExposure` der DNG an. Die
+    /// eingebettete Vorschau, die der Server zeigt, tut das nicht — bei einer
+    /// SuperRAW der Notboring-App (+0,90 EV) lag das Bearbeiten-Bild dadurch fast eine
+    /// Blende über der Ansicht, der Himmel brannte aus. Bei Q3 (0) und Fuji-RAF liegt
+    /// der Wert nahe 0 und die Engine stimmte schon vorher mit der Vorschau überein;
+    /// die Schwelle lässt diese Dateien unberührt. Gemessen an einer Notboring- und drei
+    /// Q3-Dateien (11/2026), nicht an ProRAW.
+    static func startBaseline(datei: Float) -> Float {
+        datei >= baselineSchwelle ? 0 : datei
     }
 
     // MARK: - Preview
@@ -191,6 +210,7 @@ actor RawDevelopEngine {
     }
 
     private static func applyStage1(to filter: CIRAWFilter, params: RawDevelopParams) {
+        filter.baselineExposure = startBaseline(datei: filter.baselineExposure)
         if let temperature = params.temperature {
             filter.neutralTemperature = Float(temperature)
         }
@@ -254,6 +274,86 @@ actor RawDevelopEngine {
         return points
     }
 
+    /// Filmische Tonkurve (`farbModell >= 2`): echte S-Kurve für Kontrast mit verankertem
+    /// Schwarz-, Mittel- und Weißpunkt sowie weiche Schulter/Toe für Lichter, Tiefen,
+    /// Weiß und Schwarz ohne hartes Clipping. Pure Funktion — direkt unit-testbar.
+    static func filmicToneCurvePoints(
+        highlights: Double, shadows: Double, whites: Double, blacks: Double,
+        contrast: Double, dehaze: Double
+    ) -> [CGPoint] {
+        let h = highlights / 100
+        let s = shadows / 100
+        let w = whites / 100
+        let b = blacks / 100
+        let d = dehaze / 100
+        let c = contrast - 1.0
+
+        var p0 = CGPoint(x: 0, y: 0)
+        var p1 = CGPoint(x: 0.25, y: 0.25)
+        let p2 = CGPoint(x: 0.5, y: 0.5)
+        var p3 = CGPoint(x: 0.75, y: 0.75)
+        var p4 = CGPoint(x: 1.0, y: 1.0)
+
+        // Schwarz: positiv = sanfter Matte-Lift; negativ = weicher Toe ohne Mitten-Absturz.
+        if b > 0 {
+            p0.y = 0.05 * b
+            p1.y += 0.025 * b
+        } else if b < 0 {
+            let neg = -b
+            p0.x = 0.03 * neg
+            p1.x = 0.25 + 0.05 * neg
+            p1.y -= 0.07 * neg
+        }
+
+        // Weiß: positiv = sanfte Schulter-Anhebung; negativ = Lichter komprimieren ohne Grau-Nebel.
+        if w > 0 {
+            p4.x = 1.0 - 0.04 * w
+            p3.y += 0.07 * w
+        } else if w < 0 {
+            let neg = -w
+            p4.y = 1.0 - 0.04 * neg
+            p3.y -= 0.08 * neg
+        }
+
+        // Filmischer S-Kontrast mit verankertem Schwarz-, Mittel- und Weißpunkt.
+        p1.y -= 0.22 * c
+        p3.y += 0.22 * c
+
+        // Lichter & Tiefen: fein abgestimmte Kurvenanteile.
+        if h > 0 {
+            p3.y += 0.10 * h
+        } else if h < 0 {
+            p3.y -= 0.04 * -h
+        }
+        if s < 0 {
+            p1.y -= 0.09 * -s
+        } else if s > 0 {
+            p1.y += 0.04 * s
+        }
+
+        // Dunst entfernen
+        if d > 0 {
+            p0.x = max(p0.x, 0.04 * d)
+            p1.y -= 0.04 * d
+        } else if d < 0 {
+            p0.y = max(p0.y, 0.04 * -d)
+        }
+
+        // Stützpunkte begrenzen
+        p0.x = min(max(p0.x, 0), 0.15)
+        p0.y = min(max(p0.y, 0), 0.25)
+        p1.y = min(max(p1.y, 0.02), 0.48)
+        p3.y = min(max(p3.y, 0.52), 0.98)
+        p4.x = min(max(p4.x, 0.85), 1.0)
+        p4.y = min(max(p4.y, 0.75), 1.0)
+
+        var points = [p0, p1, p2, p3, p4]
+        for i in 1 ..< points.count {
+            points[i].x = max(points[i].x, points[i - 1].x + 0.01)
+        }
+        return points
+    }
+
     private static let identityCurvePoints: [CGPoint] = [
         CGPoint(x: 0, y: 0), CGPoint(x: 0.25, y: 0.25), CGPoint(x: 0.5, y: 0.5),
         CGPoint(x: 0.75, y: 0.75), CGPoint(x: 1, y: 1),
@@ -266,14 +366,16 @@ actor RawDevelopEngine {
     private final class HSLCubeCache: @unchecked Sendable {
         private let lock = NSLock()
         private var mixer: HSLMixerParams?
+        private var okLab: Bool = false
         private var data: Data?
 
-        func cubeData(for mixer: HSLMixerParams, dimension: Int) -> Data {
+        func cubeData(for mixer: HSLMixerParams, dimension: Int, okLab: Bool) -> Data {
             lock.lock()
             defer { lock.unlock() }
-            if let data, self.mixer == mixer { return data }
-            let fresh = HSLColorCube.makeCubeData(mixer: mixer, dimension: dimension)
+            if let data, self.mixer == mixer, self.okLab == okLab { return data }
+            let fresh = HSLColorCube.makeCubeData(mixer: mixer, dimension: dimension, okLab: okLab)
             self.mixer = mixer
+            self.okLab = okLab
             self.data = fresh
             return fresh
         }
@@ -281,6 +383,16 @@ actor RawDevelopEngine {
 
     private static let hslCubeCache = HSLCubeCache()
     private static let hslCubeDimension = 64
+
+    /// Wendet einen 8-Band-Farbmischer über die gecachte Display-P3-3D-LUT auf ein `CIImage` an.
+    static func applyHSL(_ img: CIImage, mixer: HSLMixerParams, okLab: Bool = true) -> CIImage {
+        let f = CIFilter.colorCubeWithColorSpace()
+        f.inputImage = img
+        f.cubeDimension = Float(hslCubeDimension)
+        f.cubeData = hslCubeCache.cubeData(for: mixer, dimension: hslCubeDimension, okLab: okLab)
+        f.colorSpace = CGColorSpace(name: CGColorSpace.displayP3)
+        return f.outputImage ?? img
+    }
 
     /// Nachgelagerte Filterkette hinter dem `CIRAWFilter`. `internal static`, damit
     /// Unit-Tests direkt gegen sie laufen können, ohne einen CIRAWFilter zu benötigen.
@@ -299,55 +411,123 @@ actor RawDevelopEngine {
         let effContrast = params.contrast + 0.15 * dehazeN
         let effVibrance = params.vibrance + 0.15 * dehazeN
 
-        // ── Lichter-Rettung / Schatten-Aufhellung (lokal wirkend) ──
-        let highlightRecovery = min(0, params.highlights / 100)
-        let shadowLift = max(0, params.shadows / 100)
-        if highlightRecovery != 0 || shadowLift != 0 {
-            let f = CIFilter.highlightShadowAdjust()
-            f.inputImage = img
-            f.highlightAmount = Float(1.0 + highlightRecovery)
-            f.shadowAmount = Float(shadowLift)
-            img = f.outputImage ?? img
-        }
-
-        if effContrast != 1 || params.saturation != 1 {
-            let f = CIFilter.colorControls()
-            f.inputImage = img
-            f.brightness = 0
-            f.contrast = Float(effContrast)
-            f.saturation = Float(params.saturation)
-            img = f.outputImage ?? img
-        }
-
-        let curve = toneCurvePoints(
-            highlights: params.highlights, shadows: params.shadows,
-            whites: params.whites, blacks: params.blacks, dehaze: params.dehaze
-        )
-        if curve != identityCurvePoints {
-            let f = CIFilter(name: "CIToneCurve")!
-            f.setValue(img, forKey: kCIInputImageKey)
-            for (i, p) in curve.enumerated() {
-                f.setValue(CIVector(x: p.x, y: p.y), forKey: "inputPoint\(i)")
+        if params.farbModell >= 2 {
+            // ── Lichter-Rettung / Schatten-Aufhellung (lokal wirkend, feinfühliger dosiert) ──
+            let highlightRecovery = min(0, params.highlights / 100) * 0.85
+            let shadowLift = max(0, params.shadows / 100) * 0.85
+            if highlightRecovery != 0 || shadowLift != 0 {
+                let f = CIFilter.highlightShadowAdjust()
+                f.inputImage = img
+                f.highlightAmount = Float(1.0 + highlightRecovery)
+                f.shadowAmount = Float(shadowLift)
+                img = f.outputImage ?? img
             }
-            img = f.outputImage ?? img
-        }
 
-        if effVibrance != 0 {
-            let f = CIFilter(name: "CIVibrance")!
-            f.setValue(img, forKey: kCIInputImageKey)
-            f.setValue(Float(effVibrance), forKey: "inputAmount")
-            img = f.outputImage ?? img
-        }
+            let curve = filmicToneCurvePoints(
+                highlights: params.highlights, shadows: params.shadows,
+                whites: params.whites, blacks: params.blacks,
+                contrast: effContrast, dehaze: params.dehaze
+            )
+            if curve != identityCurvePoints {
+                let f = CIFilter(name: "CIToneCurve")!
+                f.setValue(img, forKey: kCIInputImageKey)
+                for (i, p) in curve.enumerated() {
+                    f.setValue(CIVector(x: p.x, y: p.y), forKey: "inputPoint\(i)")
+                }
+                img = f.outputImage ?? img
+            }
 
-        // ── Farbmischer (nach der Ton-Kette: die LUT clampt auf 0…1, Extended-Range-
-        // Lichter sollen vorher abgewickelt sein) ──
-        if !params.hsl.isIdentity {
-            let f = CIFilter.colorCubeWithColorSpace()
-            f.inputImage = img
-            f.cubeDimension = Float(hslCubeDimension)
-            f.cubeData = hslCubeCache.cubeData(for: params.hsl, dimension: hslCubeDimension)
-            f.colorSpace = CGColorSpace(name: CGColorSpace.displayP3)
-            img = f.outputImage ?? img
+            if !params.toneCurve.isIdentity {
+                let f = CIFilter(name: "CIToneCurve")!
+                f.setValue(img, forKey: kCIInputImageKey)
+                for (i, p) in params.toneCurve.points.enumerated() {
+                    f.setValue(CIVector(x: p.x, y: p.y), forKey: "inputPoint\(i)")
+                }
+                img = f.outputImage ?? img
+            }
+
+            if effVibrance != 0 || params.saturation != 1 {
+                img = FarbCube.apply(
+                    to: img,
+                    vibrance: effVibrance,
+                    saturation: params.saturation,
+                    dimension: FarbCube.dimension(forScale: scale)
+                )
+            }
+
+            // ── Farbmischer (OkLab/OkLCh nach der Ton-Kette: LUT clampt auf 0…1) ──
+            if !params.hsl.isIdentity {
+                img = applyHSL(img, mixer: params.hsl, okLab: true)
+            }
+
+            // ── Farbtonung / Color Grading ──
+            if !params.splitToning.isIdentity {
+                img = FilmLookRenderer.applySplitToning(img, toning: params.splitToning, extent: img.extent)
+            }
+        } else {
+            // ── Lichter-Rettung / Schatten-Aufhellung (lokal wirkend) ──
+            let highlightRecovery = min(0, params.highlights / 100)
+            let shadowLift = max(0, params.shadows / 100)
+            if highlightRecovery != 0 || shadowLift != 0 {
+                let f = CIFilter.highlightShadowAdjust()
+                f.inputImage = img
+                f.highlightAmount = Float(1.0 + highlightRecovery)
+                f.shadowAmount = Float(shadowLift)
+                img = f.outputImage ?? img
+            }
+
+            if effContrast != 1 || params.saturation != 1 {
+                let f = CIFilter.colorControls()
+                f.inputImage = img
+                f.brightness = 0
+                f.contrast = Float(effContrast)
+                f.saturation = Float(params.saturation)
+                img = f.outputImage ?? img
+            }
+
+            let curve = toneCurvePoints(
+                highlights: params.highlights, shadows: params.shadows,
+                whites: params.whites, blacks: params.blacks, dehaze: params.dehaze
+            )
+            if curve != identityCurvePoints {
+                let f = CIFilter(name: "CIToneCurve")!
+                f.setValue(img, forKey: kCIInputImageKey)
+                for (i, p) in curve.enumerated() {
+                    f.setValue(CIVector(x: p.x, y: p.y), forKey: "inputPoint\(i)")
+                }
+                img = f.outputImage ?? img
+            }
+
+            if !params.toneCurve.isIdentity {
+                let f = CIFilter(name: "CIToneCurve")!
+                f.setValue(img, forKey: kCIInputImageKey)
+                for (i, p) in params.toneCurve.points.enumerated() {
+                    f.setValue(CIVector(x: p.x, y: p.y), forKey: "inputPoint\(i)")
+                }
+                img = f.outputImage ?? img
+            }
+
+            if effVibrance != 0 {
+                if params.farbModell >= 1 {
+                    img = FarbCube.apply(to: img, vibrance: effVibrance, dimension: FarbCube.dimension(forScale: scale))
+                } else {
+                    // Bearbeitungen aus der Zeit vor dem Farbmodell 1 rechnen weiter wie damals.
+                    let f = CIFilter(name: "CIVibrance")!
+                    f.setValue(img, forKey: kCIInputImageKey)
+                    f.setValue(Float(effVibrance), forKey: "inputAmount")
+                    img = f.outputImage ?? img
+                }
+            }
+
+            // ── Farbmischer (nach der Ton-Kette: die LUT clampt auf 0…1, Extended-Range-
+            // Lichter sollen vorher abgewickelt sein) ──
+            if !params.hsl.isIdentity {
+                img = applyHSL(img, mixer: params.hsl, okLab: false)
+            }
+
+            if !params.splitToning.isIdentity {
+                img = FilmLookRenderer.applySplitToning(img, toning: params.splitToning, extent: img.extent)
+            }
         }
 
         // ── Film-Look: nach der Farbe, vor den Effekten. Vignette und Korn des Nutzers
@@ -372,22 +552,12 @@ actor RawDevelopEngine {
         let extent = img.extent
         let longEdge = max(extent.width, extent.height)
 
-        // Mindestradius 1 px: Bei sehr kleinen Bildern (Thumbnails, Tests) fielen die
-        // Bruchteil-Radien sonst unter die Wirkschwelle der Filter.
-        if params.texture != 0, longEdge > 0 {
-            img = detailContrast(
-                img, amount: params.texture / 100,
-                sharpenRadius: max(1, 0.004 * longEdge), sharpenGain: 0.5,
-                blurRadius: max(1, 0.002 * longEdge), blurMix: 0.35
-            )
+        if params.texture != 0 {
+            img = LokalerKontrast.textur(img, amount: params.texture / 100)
         }
 
-        if params.clarity != 0, longEdge > 0 {
-            img = detailContrast(
-                img, amount: params.clarity / 100,
-                sharpenRadius: max(1, 0.015 * longEdge), sharpenGain: 0.6,
-                blurRadius: max(1, 0.008 * longEdge), blurMix: 0.35
-            )
+        if params.clarity != 0 {
+            img = LokalerKontrast.klarheit(img, amount: params.clarity / 100)
         }
 
         if params.vignette != 0, longEdge > 0 {
@@ -405,34 +575,6 @@ actor RawDevelopEngine {
         }
 
         return img
-    }
-
-    /// Klarheit/Struktur: positiver Wert = Unsharp-Mask mit großem Radius (lokaler
-    /// Kontrast), negativer Wert = Mix Richtung Gauß-Weichzeichnung. Radien kommen vom
-    /// Aufrufer als Bild-Bruchteile — auflösungsunabhängig.
-    private static func detailContrast(
-        _ img: CIImage, amount: Double,
-        sharpenRadius: CGFloat, sharpenGain: Double,
-        blurRadius: CGFloat, blurMix: Double
-    ) -> CIImage {
-        let extent = img.extent
-        if amount > 0 {
-            let f = CIFilter.unsharpMask()
-            f.inputImage = img.clampedToExtent()
-            f.radius = Float(sharpenRadius)
-            f.intensity = Float(sharpenGain * amount)
-            return (f.outputImage ?? img).cropped(to: extent)
-        } else {
-            let blur = CIFilter.gaussianBlur()
-            blur.inputImage = img.clampedToExtent()
-            blur.radius = Float(blurRadius)
-            guard let blurred = blur.outputImage?.cropped(to: extent) else { return img }
-            let mix = CIFilter.mix()
-            mix.inputImage = blurred
-            mix.backgroundImage = img
-            mix.amount = Float(blurMix * -amount)
-            return (mix.outputImage ?? img).cropped(to: extent)
-        }
     }
 
     /// Filmkorn: deterministisches `CIRandomGenerator`-Rauschen, entsättigt, um 0.5

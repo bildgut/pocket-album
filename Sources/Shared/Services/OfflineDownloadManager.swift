@@ -203,6 +203,8 @@ actor OfflineDownloadManager {
     private var nachholKontext: (container: ModelContainer, apiClient: ImmichAPIClient)?
     /// `isMetered` ist bis zum ersten Pfad-Rückruf nur ein Vorgabewert (`false`).
     private var pfadBekannt = false
+    /// Führt der Pfad wirklich ins Netz? Siehe ``ConnectionManager/netzNutzbar(_:)``.
+    private var netzNutzbar = true
     private var nachholenNachPfad = false
 
     private var lastSyncDate: Date? {
@@ -244,14 +246,17 @@ actor OfflineDownloadManager {
         guard ueberwacheNetz else { return }
         monitor.pathUpdateHandler = { [weak self] path in
             let beschreibung = Self.pfadBeschreibung(path)
+            let nutzbar = ConnectionManager.netzNutzbar(path)
             Task { [weak self] in
-                await self?.updateMeteredStatus(path.isExpensive || path.isConstrained, pfad: beschreibung)
+                await self?.updateMeteredStatus(path.isExpensive || path.isConstrained, pfad: beschreibung,
+                                                netzNutzbar: nutzbar)
             }
         }
         monitor.start(queue: DispatchQueue.global(qos: .background))
     }
 
-    func updateMeteredStatus(_ metered: Bool, pfad: String? = nil) {
+    func updateMeteredStatus(_ metered: Bool, pfad: String? = nil, netzNutzbar: Bool = true) {
+        self.netzNutzbar = netzNutzbar
         if let pfad {
             if pfad != pfadText, isSyncing { netzWechsel += 1 }
             pfadText = pfad
@@ -286,7 +291,11 @@ actor OfflineDownloadManager {
     }
 
     private func pruefeNachholen(ausloeser: String) {
-        guard let kontext = nachholKontext else { return }
+        // Ohne WLAN, Mobilfunk oder Kabel (Flugmodus, auch mit VPN-Tunnel) hinge der
+        // Lauf nur in den Fristen und stünde auf „Vorbereitung…“ (Gerätebefund
+        // 26.10.2026). Kommt das Netz zurück, verbindet der `ConnectionManager` neu,
+        // und das Telefon ruft mit dem neuen Client wieder `nachholen` auf.
+        guard netzNutzbar, let kontext = nachholKontext else { return }
         Task {
             let wartet = await MainActor.run { !OfflineSyncProgress.shared.wartetAufWLAN.isEmpty }
             let unvollstaendig = wartet || Self.hatUnvollstaendigeVermerke(in: ModelContext(kontext.container))

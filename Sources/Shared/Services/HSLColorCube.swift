@@ -18,7 +18,7 @@ enum HSLColorCube {
     // MARK: - LUT
 
     /// RGBA-Float-Würfel für `CIColorCubeWithColorSpace` (dimension³ × 4 Floats).
-    static func makeCubeData(mixer: HSLMixerParams, dimension: Int = 64) -> Data {
+    static func makeCubeData(mixer: HSLMixerParams, dimension: Int = 64, okLab: Bool = false) -> Data {
         let dim = max(2, dimension)
         var cube = [Float](repeating: 0, count: dim * dim * dim * 4)
         let bands = HSLBandID.allCases.map { mixer[$0] }
@@ -30,7 +30,9 @@ enum HSLColorCube {
                 let gf = Double(g) / Double(dim - 1)
                 for r in 0 ..< dim {
                     let rf = Double(r) / Double(dim - 1)
-                    let (or_, og, ob) = adjust(r: rf, g: gf, b: bf, bands: bands)
+                    let (or_, og, ob) = okLab
+                        ? adjustOkLab(r: rf, g: gf, b: bf, bands: bands)
+                        : adjust(r: rf, g: gf, b: bf, bands: bands)
                     cube[offset]     = Float(or_)
                     cube[offset + 1] = Float(og)
                     cube[offset + 2] = Float(ob)
@@ -73,10 +75,57 @@ enum HSLColorCube {
         return hslToRGB(h: h, s: s, l: l)
     }
 
+    /// Wahrnehmungsgetreue Farbmischer-Variante in OkLCh (`farbModell >= 2`): Farbtondrehung
+    /// bewahrt die empfundene Helligkeit, schützt Hauttöne durch engere Orange/Gelb-Bänder
+    /// und projiziert Überschreitungen ins Display-P3-Gamut statt hart zu clampen.
+    static func adjustOkLab(r: Double, g: Double, b: Double, bands: [HSLBand]) -> (Double, Double, Double) {
+        let (h, _, _) = rgbToHSL(r: r, g: g, b: b)
+        let lab = OkLab.fromEncodedP3(r: r, g: g, b: b)
+        let chroma = hypot(lab.a, lab.b)
+        guard chroma > 1e-5 else { return (r, g, b) }
+
+        let chromaGate = smoothstep(edge0: 0.008, edge1: 0.045, x: chroma)
+        let weights = bandWeights(hueDegrees: h, narrowOrange: true)
+
+        var hueShiftRad = 0.0
+        var satGain = 0.0
+        var lumShift = 0.0
+        for (i, band) in bands.enumerated() {
+            let w = weights[i] * chromaGate
+            guard w != 0 else { continue }
+            hueShiftRad += w * (band.hue / 100.0) * (22.0 * .pi / 180.0)
+            satGain += w * (band.sat / 100.0) * 0.50
+            lumShift += w * (band.lum / 100.0) * 0.16
+        }
+
+        guard hueShiftRad != 0 || satGain != 0 || lumShift != 0 else { return (r, g, b) }
+
+        let theta = atan2(lab.b, lab.a) + hueShiftRad
+        let cNeu = max(0.0, chroma * (1.0 + satGain))
+        let lNeu = min(1.0, max(0.0, lab.L + lumShift * lab.L * (1.0 - lab.L) * 2.2))
+        let aNeu = cNeu * cos(theta)
+        let bNeu = cNeu * sin(theta)
+
+        let rgb = OkLab.toEncodedP3(L: lNeu, a: aNeu, b: bNeu)
+        if OkLab.istImGamut(rgb) {
+            return (min(1, max(0, rgb.r)), min(1, max(0, rgb.g)), min(1, max(0, rgb.b)))
+        }
+
+        var lo = 0.0, hi = 1.0
+        for _ in 0 ..< 10 {
+            let mid = (lo + hi) / 2
+            let probe = OkLab.toEncodedP3(L: lNeu, a: aNeu * mid, b: bNeu * mid)
+            if OkLab.istImGamut(probe) { lo = mid } else { hi = mid }
+        }
+        let clamped = OkLab.toEncodedP3(L: lNeu, a: aNeu * lo, b: bNeu * lo)
+        return (min(1, max(0, clamped.r)), min(1, max(0, clamped.g)), min(1, max(0, clamped.b)))
+    }
+
     /// Raised-Cosine-Gewichte aller 8 Bänder für einen Farbton (Grad). Die Bandbreite
     /// reicht jeweils bis zu den Nachbarzentren; die Gewichte sind normiert (Summe 1,
-    /// sofern überhaupt ein Band greift).
-    static func bandWeights(hueDegrees: Double) -> [Double] {
+    /// sofern überhaupt ein Band greift). Mit `narrowOrange` wird der Übergang um Orange/Gelb
+    /// enger gefasst, damit Gelb-Verschiebungen Hauttöne nicht mitziehen.
+    static func bandWeights(hueDegrees: Double, narrowOrange: Bool = false) -> [Double] {
         var h = hueDegrees.truncatingRemainder(dividingBy: 360)
         if h < 0 { h += 360 }
 
@@ -96,10 +145,11 @@ enum HSLColorCube {
             var toNext = next - center
             if toNext <= 0 { toNext += 360 }
             let width = signed >= 0 ? toNext : toPrev
+            let effectiveWidth = (narrowOrange && (i == 1 || i == 2)) ? width * 0.8 : width
 
             let d = abs(signed)
-            if d < width {
-                weights[i] = 0.5 * (1 + cos(Double.pi * d / width))
+            if d < effectiveWidth {
+                weights[i] = 0.5 * (1 + cos(Double.pi * d / effectiveWidth))
             }
         }
 

@@ -3,7 +3,7 @@ import Foundation
 /// Ein in der Import-Vorschau abgewähltes Foto, zum Löschen vorgemerkt.
 /// `modificationDate` ist der Stand **zur Zeit der Vorschau** — weicht er beim
 /// Löschen ab, hat der Nutzer das Foto inzwischen bearbeitet.
-struct ApplePhotoVerwerfKandidat: Equatable, Sendable {
+struct ApplePhotoVerwerfKandidat: Equatable, Sendable, Codable {
     let localIdentifier: String
     let modificationDate: Date?
 }

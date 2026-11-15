@@ -85,9 +85,11 @@ struct PhoneAlbumGridView: View {
                     .buttonStyle(.plain)
                     .padding([.horizontal, .top], 16)
                 }
-                // Nur online und ohne Suchbegriff: Die Favoriten kommen direkt vom
-                // Server, und eine Albumsuche soll nur Alben zeigen.
-                if suchtext.isEmpty, !connection.state.isOffline, connection.apiClient != nil {
+                // Ohne Suchbegriff (eine Albumsuche soll nur Alben zeigen). Offline nur,
+                // wenn die Favoriten auf dem iPhone liegen — sonst gäbe es nichts zu zeigen.
+                if PhoneFavoritenKachel.sichtbar(suchtext: suchtext, istOffline: connection.state.isOffline,
+                                                 hatClient: connection.apiClient != nil,
+                                                 offlineGespeichert: offline.favoritenBadge != .cloud) {
                     NavigationLink(value: PhoneFavoritenZiel()) {
                         PhoneFavoritenKachel(badge: offline.favoritenBadge)
                     }

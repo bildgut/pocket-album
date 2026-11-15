@@ -109,6 +109,66 @@ struct FilmLook: Codable, Equatable, Sendable, Identifiable {
 
     var istSchwarzweiss: Bool { saettigung == 0 }
 
+    /// Knackige 1-Zeilen-Charakteristik für die Kachel-Unterzeile im Looks-Raster,
+    /// damit nicht unter jedem Look derselbe lange Mess-Hinweis („Nach Adobes Kameraprofil …")
+    /// abgeschnitten wird. Der volle Mess-Hinweis bleibt im Tooltip (`hinweis`).
+    var kurzbeschreibung: String {
+        switch id {
+        case "fuji-provia": return "Natürliche Farben, ausgewogener Kontrast"
+        case "fuji-velvia": return "Kräftige Farben & satte Landschaftstöne"
+        case "fuji-astia": return "Weiche Lichter & sanfte Hauttöne"
+        case "fuji-classic-chrome": return "Gedämpfte Farben, markante Schatten"
+        case "fuji-classic-negative": return "Kühle Schatten, hartes Straßenlicht"
+        case "fuji-nostalgic-negative": return "Warme Bernsteintöne der Siebziger"
+        case "fuji-eterna": return "Sanfter Kino-Look mit flachem Kontrast"
+        case "fuji-acros": return "Feinkörniges Schwarzweiß mit tiefen Schatten"
+        case "fuji-pro-neg-hi": return "Weiche Farbabstufung mit klarem Kontrast"
+        case "leica-vivid": return "Satte Farben & tiefe Leica-Schwärzen"
+        case "leica-teal": return "Kühle Türkistöne mit warmen Lichtern"
+        case "leica-mono-natural": return "Ausgewogenes, natürliches Monochrom"
+        case "leica-greg-williams": return "Reportage-Schwarzweiß mit offenen Lichtern"
+        case "leica-selenium": return "Schwarzweiß mit kühler Selen-Tönung"
+        case "sw-acros-gelb": return "Himmel leicht abgedunkelt, warme Hauttöne"
+        case "sw-acros-rot": return "Dramatischer Himmel & starker S/W-Kontrast"
+        case "sw-acros-gruen": return "Feine Laub- & Porträt-Tonwerte in S/W"
+        case "sw-fuji-monochrom": return "Klares, neutrales Kamera-Schwarzweiß"
+        case "sw-sepia": return "Klassische warme Braunfärbung"
+        case "analog-kraeftig-warm": return "Warmer Farbfilm mit leichter Vignette"
+        case "analog-cyan": return "Leuchtende Farben mit kühlem Cyan-Schimmer"
+        case "analog-modern-verblasst-teal": return "Verblasster Pastell-Look mit Teal-Note"
+        case "kino-blau": return "Kühles Kinolicht in Blau & Türkis"
+        case "kino-gold-teal": return "Klassischer Blockbuster-Kontrast Gold/Teal"
+        case "kino-gold-gedaempft": return "Warme goldene Lichter, sanfte Tiefe"
+        case "kino-gedaempft": return "Atmosphärisches Kino mit starker Vignette"
+        case "kino-gold-gedaempft-2": return "Dunkler Film-Look mit warmen Akzenten"
+        case "kino-gold": return "Entsättigter Look mit warmem Goldschimmer"
+        case "landschaft-klar": return "Klare Grüntöne & leuchtender Himmel"
+        case "landschaft-blau-gedaempft": return "Sanftes Naturlicht mit feinem Filmkorn"
+        case "landschaft-hell": return "Luftig-helle Landschaftsfarben"
+        case "vintage-gedaempft": return "Angehobene Schatten & Retro-Korn"
+        case "vintage-gedaempft-2": return "Stark verblasster 70er-Jahre-Abzug"
+        case "urban-blau-gedaempft": return "Kühler Großstadt-Look, reduzierte Sättigung"
+        case "urban-blau": return "Kontrastreiche Street-Fotografie in Blau"
+        case "urban-gedaempft": return "Moody Street-Look mit kräftiger Vignette"
+        case "nacht-gold-gedaempft": return "Warmes Kunstlicht für Abend- & Nachtszenen"
+        case "nacht-blau-gedaempft": return "Kühle Blaue Stunde & Neonlichter"
+        case "nacht-gold-gedaempft-2": return "Leuchtende Nachtfarben mit warmen Lichtern"
+        case "mono-weich": return "Weiches Schwarzweiß mit klassischem Korn"
+        case "mono-weich-getoent": return "Sanft abgedämpftes S/W mit feiner Körnung"
+        case "mono-gruenfilter": return "Differenzierte Grüntöne & klare Konturen"
+        case "mono-gruenfilter-getoent": return "Mattes S/W mit warmem Lichter-Hauch"
+        case "community-shutterspeed": return "Warme Schatten & entsättigtes Türkis"
+        case "community-barber-life": return "Dunkler Low-Key-Look mit kühlen Lichtern"
+        case "community-castle": return "Kühler, mystischer Look für Architektur"
+        case "community-lonely-liquor": return "Klare Kontraste & kühle Großstadt-Atmosphäre"
+        case "community-motocross": return "Dynamischer Teal-&-Orange-Action-Look"
+        case "community-parque-alerce": return "Tiefes Waldgrün & kühle Nebel-Lichter"
+        case "community-streetart": return "Weiche Konturen mit knalligen Rot-/Orangetönen"
+        case "community-tokyo-japan": return "Matte Schatten & urbane Pastellfarben"
+        default: return hinweis
+        }
+    }
+
     // MARK: - Vorwärtskompatibles Decoding
 
     private enum CodingKeys: String, CodingKey {

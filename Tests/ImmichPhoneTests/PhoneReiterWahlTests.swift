@@ -32,9 +32,41 @@ struct PhoneReiterWahlTests {
         }
     }
 
-    @Test("Vier Reiter in der Reihenfolge des Tab-Balkens")
+    @Test("Vier Reiter in der Standardreihenfolge des Tab-Balkens")
     func reihenfolge() {
-        #expect(PhoneReiter.allCases == [.alben, .fotos, .entdecken, .einstellungen])
+        #expect(PhoneReiter.allCases == [.fotos, .alben, .entdecken, .einstellungen])
+    }
+
+    @Test("Standardwert des ersten Reiters ist Fotos")
+    func ersterReiterStandard() {
+        let (defaults, suite) = frischeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        #expect(PhoneReiterWahl.ersterReiter(defaults: defaults) == .fotos)
+        #expect(PhoneReiterWahl.reihenfolge(erster: .fotos) == [.fotos, .alben, .entdecken, .einstellungen])
+    }
+
+    @Test("Ersten Reiter auf Alben umstellen tauscht die ersten beiden Positionen")
+    func ersterReiterAlben() {
+        let (defaults, suite) = frischeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        PhoneReiterWahl.setzeErstenReiter(.alben, defaults: defaults)
+        #expect(PhoneReiterWahl.ersterReiter(defaults: defaults) == .alben)
+        #expect(PhoneReiterWahl.reihenfolge(erster: .alben) == [.alben, .fotos, .entdecken, .einstellungen])
+
+        PhoneReiterWahl.setzeErstenReiter(.fotos, defaults: defaults)
+        #expect(PhoneReiterWahl.ersterReiter(defaults: defaults) == .fotos)
+    }
+
+    @Test("Ungültige Werte in UserDefaults fallen sicher auf Fotos zurück")
+    func ersterReiterUngueltig() {
+        let (defaults, suite) = frischeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set("entdecken", forKey: PhoneReiterWahl.startReiterSchluessel)
+        #expect(PhoneReiterWahl.ersterReiter(defaults: defaults) == .fotos)
+        #expect(PhoneReiterWahl.reihenfolge(erster: .entdecken) == [.fotos, .alben, .entdecken, .einstellungen])
     }
 
     // Smart Alben spiegelt nur der Mac-Client auf den Server. Ihr Abschnitt im
@@ -50,6 +82,13 @@ struct PhoneReiterWahlTests {
     func mitSpiegel() {
         #expect(PhoneReiterWahl.zeigtSmartAlben(alben: [album("Urlaub"), album("✦ Hunde")]))
     }
+}
+
+private func frischeDefaults() -> (UserDefaults, String) {
+    let suite = "PhoneReiterWahlTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defaults.removePersistentDomain(forName: suite)
+    return (defaults, suite)
 }
 
 private func album(_ name: String) -> Album {

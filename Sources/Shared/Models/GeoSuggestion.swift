@@ -195,6 +195,77 @@ enum GeoConfidenceThreshold: Int, CaseIterable, Identifiable, Sendable {
     var displayName: String { self == .all ? "Alle" : "ab \(rawValue) %" }
 }
 
+/// Zeitraum-Filter für Vorschläge und Sessions.
+enum GeoDateFilter: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case days7
+    case days30
+    case days90
+    case thisYear
+    case days365
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .all: return "Gesamte Zeit"
+        case .days7: return "Letzte 7 Tage"
+        case .days30: return "Letzte 30 Tage"
+        case .days90: return "Letzte 90 Tage"
+        case .thisYear: return "Dieses Jahr"
+        case .days365: return "Letztes Jahr"
+        }
+    }
+
+    var days: Int? {
+        switch self {
+        case .all, .thisYear: return nil
+        case .days7: return 7
+        case .days30: return 30
+        case .days90: return 90
+        case .days365: return 365
+        }
+    }
+
+    var isActive: Bool { self != .all }
+
+    func includes(_ date: Date, now: Date = Date()) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .thisYear:
+            let cal = Calendar.current
+            guard let startOfYear = cal.date(from: cal.dateComponents([.year], from: now)) else {
+                return true
+            }
+            return date >= startOfYear
+        case .days7, .days30, .days90, .days365:
+            guard let days else { return true }
+            let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+            return date >= cutoff
+        }
+    }
+}
+
+/// Sortierreihenfolge für Vorschläge und Sessions.
+enum GeoSortOrder: String, CaseIterable, Identifiable, Sendable {
+    case confidence
+    case dateNewest
+    case dateOldest
+    case closestDistance
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .confidence: return "Sicherheit"
+        case .dateNewest: return "Datum (neueste)"
+        case .dateOldest: return "Datum (älteste)"
+        case .closestDistance: return "Engster Abstand"
+        }
+    }
+}
+
 // MARK: - Ergebnis
 
 /// Ein Koordinatenvorschlag für genau eine Waise.
@@ -211,6 +282,26 @@ struct GeoSuggestion: Sendable, Equatable, Identifiable {
     let confidence: Int
     let label: GeoLabel
     let plausibility: GeoPlausibility
+    /// Räumlicher Abstand zwischen den beiden Quell-Ankern in Metern (bei Interpolation).
+    var anchorDistanceMeters: Int? = nil
+    /// Zeitabstand zum vorherigen Anker in Sekunden (Waise − Vorher).
+    var beforeDeltaSeconds: Int? = nil
+    /// Zeitabstand zum nachfolgenden Anker in Sekunden (Nachher − Waise).
+    var afterDeltaSeconds: Int? = nil
+
+    /// Kleinster zeitlicher Abstand zu einem Quell-Anker in Sekunden.
+    var nearestGapSeconds: Int {
+        switch source {
+        case .interpolated:
+            let b = beforeDeltaSeconds ?? Int.max
+            let a = afterDeltaSeconds ?? Int.max
+            return min(b, a)
+        case .nearestAnchor(_, let delta):
+            return abs(delta)
+        case .clusterMedian:
+            return Int.max
+        }
+    }
 }
 
 /// Eine Waise, für die der zeitbasierte Abgleich nichts anzubieten hat.
@@ -272,6 +363,88 @@ struct GeoCluster: Sendable, Equatable, Identifiable {
     var missingCount: Int { orphanIds.count }
 }
 
+/// Eine zeitlich zusammenhängende Gruppe von Fotos ohne GPS (ohne verwertbaren Anker-Cluster).
+struct GeoOrphanSession: Sendable, Equatable, Identifiable {
+    /// Stabiler Fingerabdruck über die enthaltenen Assets.
+    let id: String
+
+    let orphanIds: [String]
+    let anchorIds: [String]
+
+    let start: Date
+    let end: Date
+    let timeSpreadMinutes: Double
+
+    /// Abstand zum zeitlich nächsten GPS-Foto der Bibliothek (zur Orientierung).
+    let nearestAnchorGapSeconds: Int?
+    let nearestAnchorLatitude: Double?
+    let nearestAnchorLongitude: Double?
+
+    let plausibility: GeoPlausibility
+
+    var count: Int { orphanIds.count }
+}
+
+/// Eine GPS-tragende Zeile aus dem lokalen Index für „Eigene Foto-Orte".
+struct GeoKnownLocationRow: Sendable, Equatable {
+    let id: String
+    let timestamp: Date
+    let latitude: Double
+    let longitude: Double
+    let city: String?
+    let country: String?
+}
+
+/// Ein gruppierter, bekannter Aufnahmeort aus der eigenen Mediathek.
+struct GeoKnownPhotoLocation: Sendable, Equatable, Identifiable {
+    let id: String
+    let city: String?
+    let country: String?
+    let latitude: Double
+    let longitude: Double
+    /// Bis zu 4 neueste Fotos an diesem Ort für Vorschaukarten.
+    let sampleAnchorIds: [String]
+    /// Bis zu 24 Fotos an diesem Ort für den Großvergleich.
+    let anchorIds: [String]
+    let totalAnchorCount: Int
+    let latestTimestamp: Date
+    let searchTokens: [String]
+
+    init(
+        id: String,
+        city: String?,
+        country: String?,
+        latitude: Double,
+        longitude: Double,
+        sampleAnchorIds: [String],
+        anchorIds: [String],
+        totalAnchorCount: Int,
+        latestTimestamp: Date,
+        searchTokens: [String] = []
+    ) {
+        self.id = id
+        self.city = city
+        self.country = country
+        self.latitude = latitude
+        self.longitude = longitude
+        self.sampleAnchorIds = sampleAnchorIds
+        self.anchorIds = anchorIds
+        self.totalAnchorCount = totalAnchorCount
+        self.latestTimestamp = latestTimestamp
+        self.searchTokens = searchTokens
+    }
+
+    var displayTitle: String {
+        let parts = [city, country]
+            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var seen = Set<String>()
+        let unique = parts.filter { seen.insert($0).inserted }
+        if !unique.isEmpty { return unique.joined(separator: ", ") }
+        return String(format: "%.4f, %.4f", latitude, longitude)
+    }
+}
+
 /// Das vollständige Ergebnis eines Scans — beide Modi aus einem Durchlauf.
 struct GeoScanResult: Sendable {
     let pairs: [GeoSuggestion]
@@ -281,6 +454,9 @@ struct GeoScanResult: Sendable {
 
     let clusters: [GeoCluster]
     let suppressedClusters: [GeoCluster]
+
+    /// Zeitlich zusammenhängende Gruppen isolierter Fotos ohne GPS.
+    let orphanSessions: [GeoOrphanSession]
 
     /// Waisen ohne übernehmbaren Paar-Vorschlag.
     ///
@@ -293,10 +469,75 @@ struct GeoScanResult: Sendable {
     /// Zeilen mit genau einer Koordinatenhälfte — weder Anker noch Waise.
     let partialCoordinateCount: Int
 
+    init(
+        pairs: [GeoSuggestion],
+        suppressedPairs: [GeoSuggestion],
+        clusters: [GeoCluster],
+        suppressedClusters: [GeoCluster],
+        orphanSessions: [GeoOrphanSession] = [],
+        unmatchedOrphans: [GeoUnmatchedOrphan],
+        anchorCount: Int,
+        orphanCount: Int,
+        partialCoordinateCount: Int
+    ) {
+        self.pairs = pairs
+        self.suppressedPairs = suppressedPairs
+        self.clusters = clusters
+        self.suppressedClusters = suppressedClusters
+        self.orphanSessions = orphanSessions
+        self.unmatchedOrphans = unmatchedOrphans
+        self.anchorCount = anchorCount
+        self.orphanCount = orphanCount
+        self.partialCoordinateCount = partialCoordinateCount
+    }
+
     static let empty = GeoScanResult(
         pairs: [], suppressedPairs: [],
         clusters: [], suppressedClusters: [],
+        orphanSessions: [],
         unmatchedOrphans: [],
         anchorCount: 0, orphanCount: 0, partialCoordinateCount: 0
     )
+}
+
+/// Ein alternativer Ort aus zeitlich benachbarten GPS-Aufnahmen der Bibliothek.
+struct GeoAlternativeLocation: Sendable, Equatable, Identifiable {
+    let id: String
+    let start: Date
+    let end: Date
+    let latitude: Double
+    let longitude: Double
+    /// Bis zu 4 repräsentative Anker-IDs für Vorschaubilder.
+    let sampleAnchorIds: [String]
+    /// Bis zu 24 Anker-IDs dieses Clusters für das große Vergleichsraster.
+    let anchorIds: [String]
+    let totalAnchorCount: Int
+    /// Zeitlicher Abstand zur aktuellen Auswahl in Sekunden (negativ = davor, positiv = danach).
+    let deltaSeconds: Int
+    /// Räumlicher Abstand zum ursprünglich vorgeschlagenen Ort in Metern.
+    let distanceFromOriginalMeters: Int
+
+    init(
+        id: String,
+        start: Date,
+        end: Date,
+        latitude: Double,
+        longitude: Double,
+        sampleAnchorIds: [String],
+        anchorIds: [String] = [],
+        totalAnchorCount: Int,
+        deltaSeconds: Int,
+        distanceFromOriginalMeters: Int
+    ) {
+        self.id = id
+        self.start = start
+        self.end = end
+        self.latitude = latitude
+        self.longitude = longitude
+        self.sampleAnchorIds = sampleAnchorIds
+        self.anchorIds = anchorIds
+        self.totalAnchorCount = totalAnchorCount
+        self.deltaSeconds = deltaSeconds
+        self.distanceFromOriginalMeters = distanceFromOriginalMeters
+    }
 }

@@ -734,6 +734,9 @@ enum DuplicateMatcher {
     /// Ab welchem Pixelverhältnis ein Geschwister als *die* höher aufgelöste
     /// Fassung gilt und der Bearbeitungsbonus entfällt.
     static let keeperResolutionGapFactor = 2.0
+    /// Ab welchem Größenverhältnis ein unbearbeitetes Original (>= gleiche Auflösung)
+    /// einen stärker komprimierten `_edited`-Export beim Bearbeitungsbonus aussticht.
+    static let keeperSizeGapFactor = 1.15
 
     /// Ein Dateibündel der Pixel-Kamera: mehrere Dateien zu **einer** Aufnahme,
     /// verbunden über den Namensstamm.
@@ -799,7 +802,9 @@ enum DuplicateMatcher {
         // von „bearbeitet", soll aber den kleineren Bonus bekommen.
         if isFlattenedRender(row.fileName) {
             score += keeperWeightRender
-        } else if isEditedVersion(row.fileName), !isOutresolvedBy(row, in: group) {
+        } else if isEditedVersion(row.fileName),
+                  !isOutresolvedBy(row, in: group),
+                  !isOutsizedByOriginal(row, in: group) {
             score += keeperWeightEdited
         }
         if leadsBundle(row, in: group) { score += keeperWeightBundleMain }
@@ -858,6 +863,22 @@ enum DuplicateMatcher {
         return group.contains { other in
             guard other.id != row.id, let fremd = other.megapixels else { return false }
             return fremd >= eigen * keeperResolutionGapFactor
+        }
+    }
+
+    /// Ob ein unbearbeitetes Original in gleicher oder höherer Auflösung deutlich größer
+    /// als die `_edited`-Fassung ist — z. B. wenn ein Export stark herunterkomprimiert wurde.
+    private static func isOutsizedByOriginal(_ row: DupeScanRow, in group: [DupeScanRow]) -> Bool {
+        guard let eigenSize = row.fileSize, eigenSize > 0 else { return false }
+        return group.contains { other in
+            guard other.id != row.id,
+                  !isEditedVersion(other.fileName),
+                  !isFlattenedRender(other.fileName),
+                  let otherSize = other.fileSize else { return false }
+            if let eigenMP = row.megapixels, eigenMP > 0, let otherMP = other.megapixels {
+                guard otherMP >= eigenMP * 0.95 else { return false }
+            }
+            return Double(otherSize) >= Double(eigenSize) * keeperSizeGapFactor
         }
     }
 

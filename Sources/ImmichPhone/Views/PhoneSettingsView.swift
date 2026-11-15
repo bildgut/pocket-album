@@ -55,6 +55,9 @@ struct PhoneSettingsView: View {
     @State private var zeigtAbmeldeFrage = false
     @State private var zeigtVorspann = false
 
+    @AppStorage(PhoneReiterWahl.startReiterSchluessel, store: AppEnvironment.defaults)
+    private var startReiterRohwert: String = PhoneReiter.fotos.rawValue
+
     private var zusammenfassung: PhoneStorageSummary {
         PhoneStorageSummary(eintraege: quellen.map(\.eintrag))
     }
@@ -68,6 +71,7 @@ struct PhoneSettingsView: View {
             List {
                 serverAbschnitt
                 offlineAbschnitt
+                darstellungAbschnitt
                 orteAbschnitt
                 abmeldeAbschnitt
                 versionAbschnitt
@@ -172,6 +176,20 @@ struct PhoneSettingsView: View {
             }
         } footer: {
             Text("Favorites, recent days, people and albums you keep on this iPhone.")
+        }
+    }
+
+    // MARK: - Darstellung
+
+    private var darstellungAbschnitt: some View {
+        Section {
+            Picker("First Tab", selection: $startReiterRohwert) {
+                Text("Photos").tag(PhoneReiter.fotos.rawValue)
+                Text("Albums").tag(PhoneReiter.alben.rawValue)
+            }
+        } footer: {
+            Text("Sets which tab appears first in the tab bar and opens on launch.")
+                .font(.caption)
         }
     }
 

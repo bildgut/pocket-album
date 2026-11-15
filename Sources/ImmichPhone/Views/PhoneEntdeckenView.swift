@@ -11,6 +11,8 @@ struct PhoneEntdeckenView: View {
     let apiClient: ImmichAPIClient
 
     @Environment(ConnectionManager.self) private var connection
+    @Environment(\.modelContext) private var modelContext
+    @State private var offlinePersonen: [PhoneOfflinePersonen.Eintrag] = []
     @AppStorage(PhoneOrtsUebersicht.aufgeklapptSchluessel) private var alleLaender = false
 
     private var istOffline: Bool { connection.state.isOffline }
@@ -47,6 +49,7 @@ struct PhoneEntdeckenView: View {
         // nicht neu, und dieser `.task` würde ohne die Ergänzung nie erneut
         // laufen (Befund aus der Review).
         .task(id: erscheintID) {
+            offlinePersonen = PhoneOfflinePersonen.eintraege(aus: OfflinePinStore.allPins(in: modelContext))
             let connection = connection
             modell.darf = { connection.keyRechte.darf($0) }
             modell.merkeAbgelehnt = { connection.merkeAbgelehnt($0) }
@@ -114,6 +117,7 @@ struct PhoneEntdeckenView: View {
                 offlineHinweis
             }
             VStack(alignment: .leading, spacing: 18) {
+                offlinePersonenAbschnitt
                 zuletztAbschnitt
                 personenAbschnitt
                 if modell.katalog?.laender.isEmpty == false {
@@ -177,6 +181,38 @@ struct PhoneEntdeckenView: View {
                             modell.entferneZuletzt(eintrag.auswahl, basis: apiClient.baseURL.absoluteString)
                         }
                     }
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+    }
+
+    /// Ohne Netz: die gespeicherten Personen, mit ihrem Bestand auf dem iPhone.
+    @ViewBuilder private var offlinePersonenAbschnitt: some View {
+        if istOffline, !offlinePersonen.isEmpty {
+            abschnittsKopf(String(localized: "On This iPhone"))
+            VStack(spacing: 8) {
+                ForEach(offlinePersonen) { person in
+                    NavigationLink {
+                        PhoneZuletztInhalt(kind: .person, targetId: person.id,
+                                           leerText: String(localized: "No photos of this person are saved yet."))
+                            .navigationTitle(person.name)
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        HStack {
+                            Image(systemName: OfflinePinKind.person.iconName)
+                                .foregroundStyle(Marke.akzent)
+                            Text(person.name).lineLimit(1)
+                            Spacer()
+                            Text(person.anzahl.formatted())
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(12)
+                        .background(.quaternary, in: .rect(cornerRadius: 12))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 14)

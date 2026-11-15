@@ -1,6 +1,36 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "No photos of this person are saved yet.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Von dieser Person sind noch keine Fotos gespeichert."
+          }
+        }
+      }
+    },
+    "Offline · saved content": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline · gespeicherte Inhalte"
+          }
+        }
+      }
+    },
+    "Reconnect": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erneut verbinden"
+          }
+        }
+      }
+    },
     "Loaded in This Order": {
       "localizations": {
         "de": {
@@ -3018,6 +3048,296 @@
           "stringUnit": {
             "state": "translated",
             "value": "Offline · Fotos der letzten %lld Tage"
+          }
+        }
+      }
+    },
+    "Review 30 Days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "30 Tage sichten"
+          }
+        }
+      }
+    },
+    "Sort Out": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aussortieren"
+          }
+        }
+      }
+    },
+    "FAVORITE": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FAVORIT"
+          }
+        }
+      }
+    },
+    "SKIP": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "WEITER"
+          }
+        }
+      }
+    },
+    "KEEP": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BEHALTEN"
+          }
+        }
+      }
+    },
+    "TRASH": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PAPIERKORB"
+          }
+        }
+      }
+    },
+    "Favorite": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorit"
+          }
+        }
+      }
+    },
+    "Keep": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Behalten"
+          }
+        }
+      }
+    },
+    "Mark for Trash": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Für Papierkorb vormerken"
+          }
+        }
+      }
+    },
+    "Undo": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rückgängig"
+          }
+        }
+      }
+    },
+    "Loading photos from the last 30 days…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotos der letzten 30 Tage werden geladen…"
+          }
+        }
+      }
+    },
+    "All Caught Up": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alles durchgesehen"
+          }
+        }
+      }
+    },
+    "All unrated photos from the last 30 days have been reviewed.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle unbewerteten Fotos der letzten 30 Tage wurden durchgesehen."
+          }
+        }
+      }
+    },
+    "All photos from the last 30 days have been reviewed.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Fotos der letzten 30 Tage wurden durchgesehen."
+          }
+        }
+      }
+    },
+    "Review Again": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nochmal durchsehen"
+          }
+        }
+      }
+    },
+    "Review Marked Photos": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorgemerkte Fotos prüfen"
+          }
+        }
+      }
+    },
+    "Marked for Trash": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Für Papierkorb vorgemerkt"
+          }
+        }
+      }
+    },
+    "Tap a photo to remove it from the trash selection.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tippe auf ein Foto, um die Vormerkung aufzuheben."
+          }
+        }
+      }
+    },
+    "Remove from trash selection": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus der Papierkorb-Auswahl entfernen"
+          }
+        }
+      }
+    },
+    "Marked Photos Remaining": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorgemerkte Fotos nicht gelöscht"
+          }
+        }
+      }
+    },
+    "Close Without Deleting": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ohne Löschen schließen"
+          }
+        }
+      }
+    },
+    "Your API key doesn’t allow this action.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dein API-Schlüssel erlaubt diese Aktion nicht."
+          }
+        }
+      }
+    },
+    "Move 1 Photo to Trash": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Foto in den Papierkorb legen"
+          }
+        }
+      }
+    },
+    "Move %lld Photos to Trash": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Fotos in den Papierkorb legen"
+          }
+        }
+      }
+    },
+    "1 photo is still marked for trash. What would you like to do?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Foto ist noch für den Papierkorb vorgemerkt. Was möchtest du tun?"
+          }
+        }
+      }
+    },
+    "%lld photos are still marked for trash. What would you like to do?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Fotos sind noch für den Papierkorb vorgemerkt. Was möchtest du tun?"
+          }
+        }
+      }
+    },
+    "%lld marked": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld vorgemerkt"
+          }
+        }
+      }
+    },
+    "First Tab": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erster Reiter"
+          }
+        }
+      }
+    },
+    "Sets which tab appears first in the tab bar and opens on launch.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legt fest, welcher Reiter im Balken ganz links steht und beim Start aufgeht."
           }
         }
       }

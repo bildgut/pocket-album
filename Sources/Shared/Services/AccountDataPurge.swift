@@ -144,6 +144,7 @@ enum AccountDataPurge {
     static func purgeDefaults(_ defaults: UserDefaults, offlineDaten: Bool = false) {
         defaults.removeObject(forKey: "hasCompletedInitialSync")
         defaults.removeObject(forKey: "hasCachedAlbums")
+        defaults.removeObject(forKey: "swipe.gesehen.v1")
         if offlineDaten {
             for schluessel in offlineSchluessel { defaults.removeObject(forKey: schluessel) }
         }

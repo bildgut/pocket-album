@@ -381,6 +381,97 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
         return primaryId == id
     }
 
+    /// Kopie mit aktualisierten Stapel-Feldern (etwa aus dem lokalen `GridIndexStore`,
+    /// weil Album- und Such-Endpunkte kein `stackBadgeText` liefern oder nach lokalem
+    /// Titelbildwechsel bzw. Löschen einer Fassung der Stapel-Zustand sofort wechselt).
+    func withStackInfo(
+        stackId: String?,
+        stackCount: Int?,
+        stackPrimaryAssetId: String?,
+        stackBadgeText: String?
+    ) -> Asset {
+        Asset(
+            id: id,
+            type: type,
+            originalFileName: originalFileName,
+            originalPath: originalPath,
+            orientation: orientation,
+            fileCreatedAt: fileCreatedAt,
+            fileModifiedAt: fileModifiedAt,
+            localDateTime: localDateTime,
+            createdAt: createdAt,
+            isFavorite: isFavorite,
+            isArchived: isArchived,
+            duration: duration,
+            thumbhash: thumbhash,
+            isTrashed: isTrashed,
+            isOffline: isOffline,
+            isEdited: isEdited,
+            exifInfo: exifInfo,
+            people: people,
+            tags: tags,
+            width: _width,
+            height: _height,
+            stackId: stackId,
+            stackCount: stackCount,
+            stackPrimaryAssetId: stackPrimaryAssetId,
+            stackBadgeText: stackBadgeText,
+            livePhotoVideoId: livePhotoVideoId,
+            visibility: visibility,
+            checksum: checksum
+        )
+    }
+
+    /// Kopie mit aktualisiertem `isFavorite`-Status bei Erhalt sämtlicher Felder
+    /// (inkl. `people`, `tags`, EXIF und lokaler Zeit).
+    func withFavorite(_ isFavorite: Bool) -> Asset {
+        Asset(
+            id: id,
+            type: type,
+            originalFileName: originalFileName,
+            originalPath: originalPath,
+            orientation: orientation,
+            fileCreatedAt: fileCreatedAt,
+            fileModifiedAt: fileModifiedAt,
+            localDateTime: localDateTime,
+            createdAt: createdAt,
+            isFavorite: isFavorite,
+            isArchived: isArchived,
+            duration: duration,
+            thumbhash: thumbhash,
+            isTrashed: isTrashed,
+            isOffline: isOffline,
+            isEdited: isEdited,
+            exifInfo: exifInfo,
+            people: people,
+            tags: tags,
+            width: _width,
+            height: _height,
+            stackId: stackId,
+            stackCount: stackCount,
+            stackPrimaryAssetId: stackPrimaryAssetId,
+            stackBadgeText: stackBadgeText,
+            livePhotoVideoId: livePhotoVideoId,
+            visibility: visibility,
+            checksum: checksum
+        )
+    }
+
+    /// Ermittelt geänderte Favoriten-Zustände aus `.assetsDidChange` / `.syncAssetsChanged`.
+    static func favoriteUpdates(
+        from notification: Notification,
+        gridIndex: GridIndexStore = .shared
+    ) -> [String: Bool] {
+        let ids = notification.userInfo?["ids"] as? [String] ?? []
+        let metadataIds = notification.userInfo?["metadataIds"] as? [String] ?? []
+        let allIds = Array(Set(ids).union(metadataIds))
+        guard !allIds.isEmpty else { return [:] }
+        if let explicitFav = notification.userInfo?["isFavorite"] as? Bool {
+            return Dictionary(uniqueKeysWithValues: allIds.map { ($0, explicitFav) })
+        }
+        return gridIndex.favoriteStates(for: allIds)
+    }
+
     /// Zweiter Parser ohne Sekundenbruchteile.
     ///
     /// `ISO8601DateFormatter` mit `.withFractionalSeconds` weist einen Zeitstempel
@@ -450,6 +541,34 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
 
     static func == (lhs: Asset, rhs: Asset) -> Bool {
         lhs.id == rhs.id
+    }
+}
+
+extension Array where Element == Asset {
+    /// Übernimmt geänderte Favoriten-Zustände (erhält `people`, `tags`, EXIF usw.) und
+    /// legt bei einer tatsächlichen Änderung einen frischen Array-Puffer an, damit auch
+    /// `AssetBufferIdentity` den Wechsel zuverlässig erkennt.
+    /// Gibt `true` zurück, wenn sich mindestens ein Element tatsächlich geändert hat.
+    @discardableResult
+    mutating func applyFavorites(_ favoritesById: [String: Bool]) -> Bool {
+        guard !favoritesById.isEmpty, !isEmpty else { return false }
+        var updated: [Asset]?
+        for index in indices {
+            let current = self[index]
+            if let newFav = favoritesById[current.id], current.isFavorite != newFav {
+                if updated == nil {
+                    updated = []
+                    updated?.reserveCapacity(count)
+                    updated?.append(contentsOf: self[..<index])
+                }
+                updated?.append(current.withFavorite(newFav))
+            } else {
+                updated?.append(current)
+            }
+        }
+        guard let updated else { return false }
+        self = updated
+        return true
     }
 }
 

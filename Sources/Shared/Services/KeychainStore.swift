@@ -13,7 +13,7 @@ import Security
 enum KeychainStore {
     private static let service = "com.ralksta.immichmac"
     /// Schlüssel der Immich-Verbindung — werden beim Abmelden gelöscht.
-    static let connectionKeys = ["serverURL", "apiKey", "sessionToken", "email", "password"]
+    static let connectionKeys = ["serverURL", "externalServerURL", "apiKey", "sessionToken", "email", "password"]
     /// App-eigene Geheimnisse, die eine Ab-/Neuanmeldung überleben sollen.
     static let appKeys = ["geminiApiKey"]
     static let allKeys = connectionKeys + appKeys

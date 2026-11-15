@@ -30,7 +30,7 @@ phone, manages your library and does far more than Pocket Album ever will. Use i
 Pocket Album does one thing: **showing and finding** photos. It has no backup and no upload.
 What it focuses on instead:
 
-- **Albums first.** The app opens on your albums, not on a timeline.
+- **Photos or albums first.** Opens on your photos by default, or switch to albums first in Settings.
 - **Deliberately offline.** Pick the albums, favorites or people you want on the phone; they're
   downloaded and work without any connection — on a plane, at grandma's, in a basement.
 - **Find it in two taps.** Start from a person, a country, a year — or just type
@@ -49,7 +49,7 @@ It runs happily next to the official app on the same phone and server.
   should load. A progress bar shows what is still coming, downloads refresh in the background
   as far as iOS allows, and *Settings → Offline → Download Log* helps when a slow connection
   makes them stall
-- **Photos** — your whole library, grouped by day, filterable by photos/videos
+- **Photos** — your whole library, grouped by day, filterable by photos/videos, plus a 30-day swipe deck to quickly favorite photos or collect shots for the trash
 - **Explore**
   - search that understands people, years, time spans (“last summer”, “since 2020”),
     countries (also in German), cities, “videos” and “favorites”; anything else goes to
@@ -78,7 +78,7 @@ Pocket Album is not in the App Store yet. If you prefer, you can also build it y
 
 ## Requirements
 
-- iPhone with iOS 26 or later
+- iPhone or iPad with iOS 26 or later
 - An Immich server, **v3.2.0 or later**
 
 ### API key permissions

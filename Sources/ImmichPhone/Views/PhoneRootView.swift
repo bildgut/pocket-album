@@ -20,6 +20,7 @@ struct PhoneRootView: View {
 
     @Environment(ConnectionManager.self) private var connection
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var phase
 
     /// Gehört dieser Ansicht, nicht `PhoneAlbumListView` — die zeigt nur an.
     /// Aufgebaut wie `LibraryViewModel.init` / `.configure(modelContext:)` auf
@@ -67,19 +68,25 @@ struct PhoneRootView: View {
     /// Der aktive Reiter. Nur nötig, um einen **erneuten** Tipp auf „Orte" zu erkennen
     /// (`PhoneReiterWahl`): Der Setter der Bindung unten sieht den alten und den
     /// getippten Reiter, eine `TabView` ohne Auswahl meldet solche Tipps gar nicht.
-    @State private var reiter: PhoneReiter = .alben
+    @State private var reiter: PhoneReiter = PhoneReiterWahl.ersterReiter()
+
+    @AppStorage(PhoneReiterWahl.startReiterSchluessel, store: AppEnvironment.defaults)
+    private var startReiterRohwert: String = PhoneReiter.fotos.rawValue
 
     /// Gesetzt von ``PhoneModelContainer/shared``, wenn der Store beim Start nicht
     /// aufging und ersetzt wurde. Das Schließen des Hinweises setzt ihn zurück.
     @AppStorage(PhoneModelContainer.storeZurueckgesetztKey) private var storeZurueckgesetzt = false
 
+    private var ersterReiter: PhoneReiter {
+        startReiterRohwert == PhoneReiter.alben.rawValue ? .alben : .fotos
+    }
+
     var body: some View {
         Group {
             if connection.state.canBrowse, let client = connection.apiClient, let albumManager {
-                // Aus „zeigt unmittelbar das Albumraster" wird „zeigt Alben und
-                // Fotos als Reiter" — an der Verdrahtung des Albumreiters
-                // (Verbindungsweiche oben, `hasLoadedOnce`, der
-                // `onRefresh`-Durchgriff) ändert sich dabei nichts.
+                // Aus „zeigt unmittelbar das Albumraster" wird „zeigt Fotos und
+                // Alben als Reiter" — die ersten beiden Reiter lassen sich in den
+                // Einstellungen tauschen (`PhoneReiterWahl.startReiterSchluessel`).
                 TabView(selection: Binding(
                     get: { reiter },
                     set: { getippt in
@@ -89,24 +96,20 @@ struct PhoneRootView: View {
                         reiter = getippt
                     }
                 )) {
-                    Tab("Albums", systemImage: "square.stack", value: PhoneReiter.alben) {
-                        PhoneAlbumGridView(
-                            albumManager: albumManager,
-                            offline: offline,
-                            hasLoadedOnce: hasLoadedOnce,
-                            onRefresh: {
-                                // Derselbe Dreischritt wie beim Erstaufbau unten
-                                // (`setUpAlbumManagerIfNeeded()`), nur einmal
-                                // definiert in `reloadAlbumsAndWarmCovers(manager:
-                                // apiClient:)` — sonst würde der Aktualisieren-Zug
-                                // den Vorwärmer umgehen, wie der Befund aus der
-                                // vorigen Prüfung zeigte.
-                                await reloadAlbumsAndWarmCovers(manager: albumManager, apiClient: client)
-                            }
-                        )
-                    }
-                    Tab("Photos", systemImage: "photo.on.rectangle", value: PhoneReiter.fotos) {
-                        PhonePhotoFeedView(feed: photoFeed, apiClient: client)
+                    if ersterReiter == .alben {
+                        Tab("Albums", systemImage: "square.stack", value: PhoneReiter.alben) {
+                            albenInhalt(manager: albumManager, client: client)
+                        }
+                        Tab("Photos", systemImage: "photo.on.rectangle", value: PhoneReiter.fotos) {
+                            PhonePhotoFeedView(feed: photoFeed, apiClient: client)
+                        }
+                    } else {
+                        Tab("Photos", systemImage: "photo.on.rectangle", value: PhoneReiter.fotos) {
+                            PhonePhotoFeedView(feed: photoFeed, apiClient: client)
+                        }
+                        Tab("Albums", systemImage: "square.stack", value: PhoneReiter.alben) {
+                            albenInhalt(manager: albumManager, client: client)
+                        }
                     }
                     // Dritter Reiter: Suche und Einstiege (Personen, Orte, Jahre). Neben
                     // „Fotos“, weil beide dasselbe Raster teilen (`PhoneFeedRaster`). Ein
@@ -166,10 +169,16 @@ struct PhoneRootView: View {
         }
         // Wie ContentView auf dem Mac: nie unter XCTest, sonst öffnet der
         // Testhost eine echte Netzwerkverbindung.
+        // Zurück in der App und noch offline: gleich neu versuchen, statt auf die
+        // nächste Pause der Wiederholung zu warten.
+        .onChange(of: phase) { _, neu in
+            if neu == .active { connection.starteWiederverbinden(sofort: true) }
+        }
         .task {
             OnboardingStatus.merkeBestandsnutzer(istKonfiguriert: connection.isConfigured)
             // Mit Cache sofort den Inhalt zeigen, statt bis zur Frist auf „Verbinde…“.
             connection.sofortOfflineBeimKaltstart = true
+            connection.wiederholtVerbindenWennOffline = true
             if !AppEnvironment.isRunningTests,
                connection.isConfigured, !connection.state.isConnected {
                 await connection.reconnect()
@@ -195,6 +204,23 @@ struct PhoneRootView: View {
         .onDisappear {
             coverPrefetcher?.stop()
         }
+    }
+
+    private func albenInhalt(manager: AlbumManager, client: ImmichAPIClient) -> some View {
+        PhoneAlbumGridView(
+            albumManager: manager,
+            offline: offline,
+            hasLoadedOnce: hasLoadedOnce,
+            onRefresh: {
+                // Derselbe Dreischritt wie beim Erstaufbau unten
+                // (`setUpAlbumManagerIfNeeded()`), nur einmal
+                // definiert in `reloadAlbumsAndWarmCovers(manager:
+                // apiClient:)` — sonst würde der Aktualisieren-Zug
+                // den Vorwärmer umgehen, wie der Befund aus der
+                // vorigen Prüfung zeigte.
+                await reloadAlbumsAndWarmCovers(manager: manager, apiClient: client)
+            }
+        )
     }
 
     private func setUpAlbumManagerIfNeeded() async {

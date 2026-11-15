@@ -244,6 +244,14 @@ final class GridIndexStore: Sendable {
             WHERE isStackChild = 1
         """)
 
+        // Partieller Index für `stapelZustand` (`WHERE stackId IS NOT NULL OR isStackChild != 0`):
+        // Ohne ihn musste SQLite wegen des `OR stackId IS NOT NULL` alle 100 000+ Zeilen scannen.
+        exec("""
+            CREATE INDEX IF NOT EXISTS idx_grid_stack_any
+            ON grid_assets(stackId)
+            WHERE stackId IS NOT NULL OR isStackChild != 0
+        """)
+
         // Bedient genau die Arbeitsliste der EXIF-Reparatur und schrumpft mit ihrem
         // Fortschritt, statt über die ganze Tabelle zu liegen.
         exec("""
@@ -261,6 +269,15 @@ final class GridIndexStore: Sendable {
         exec("""
             CREATE INDEX IF NOT EXISTS idx_grid_visible
             ON grid_assets(isTrashed, isArchived, isHidden, fileCreatedAt DESC)
+        """)
+
+        // Abdeckender Index für alle Timeline-Abfragen mit `isStackChild = 0`
+        // (`countVisible`, `loadYearOverview`, `loadMonthOverview`, `offsetOfDate`, …):
+        // spart bei 100 000+ Zeilen den Rücksprung in die Haupttabelle nur zur Prüfung
+        // von `isStackChild = 0`.
+        exec("""
+            CREATE INDEX IF NOT EXISTS idx_grid_visible_timeline
+            ON grid_assets(isTrashed, isArchived, isHidden, isStackChild, fileCreatedAt DESC)
         """)
 
         exec("""
@@ -364,24 +381,20 @@ final class GridIndexStore: Sendable {
                 sqlite3_finalize(stmt)
             }
 
-            // Stats (favorites only)
-            let favStatsSQL = """
-                SELECT
-                    SUM(CASE WHEN type = 'IMAGE' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN type = 'VIDEO' THEN 1 ELSE 0 END),
-                    MIN(fileCreatedAt), MAX(fileCreatedAt)
-                FROM grid_assets
-                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isFavorite = 1 AND isStackChild = 0
-            """
-            stmt = nil
-            if sqlite3_prepare_v2(db, favStatsSQL, -1, &stmt, nil) == SQLITE_OK {
-                if sqlite3_step(stmt) == SQLITE_ROW {
-                    favStats.images   = Int(sqlite3_column_int64(stmt, 0))
-                    favStats.videos   = Int(sqlite3_column_int64(stmt, 1))
-                    favStats.earliest = columnOptionalText(stmt, 2)
-                    favStats.latest   = columnOptionalText(stmt, 3)
+            // Stats (favorites only) — direkt aus dem oben bereits geladenen und
+            // absteigend nach `fileCreatedAt` sortierten `favs`-Array bestimmt:
+            // spart den vierten Tabellen-Scan und stellt sicher, dass Liste und
+            // Untertitel exakt dieselbe Menge zählen.
+            if !favs.isEmpty {
+                var favImages = 0
+                var favVideos = 0
+                for asset in favs {
+                    if asset.isVideo { favVideos += 1 } else { favImages += 1 }
                 }
-                sqlite3_finalize(stmt)
+                favStats.images   = favImages
+                favStats.videos   = favVideos
+                favStats.latest   = favs.first?.fileCreatedAt
+                favStats.earliest = favs.last?.fileCreatedAt
             }
         }
         return (favs, vids, libStats, favStats)
@@ -446,7 +459,12 @@ final class GridIndexStore: Sendable {
     }
 
     /// Load visible assets for a specific ID set.
-    func loadVisible(ids: [String]) -> [Asset] {
+    ///
+    /// Stapel-Kinder (meist die RAW-Hälfte eines Paars) sind standardmäßig
+    /// **dabei**: Duplikate, Datum, GPS, Suche und Smart Alben laden darüber
+    /// gezielt IDs nach und brauchen jedes Foto. Nur das Raster blendet sie aus
+    /// und setzt dafür `ohneStapelKinder`.
+    func loadVisible(ids: [String], ohneStapelKinder: Bool = false) -> [Asset] {
         guard !ids.isEmpty else { return [] }
 
         var result: [Asset] = []
@@ -454,11 +472,12 @@ final class GridIndexStore: Sendable {
             guard let db = readDB else { return }
 
             let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            let stapelFilter = ohneStapelKinder ? " AND isStackChild = 0" : ""
             let sql = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
                 WHERE id IN (\(placeholders))
-                  AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+                  AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0\(stapelFilter)
             """
 
             var stmt: OpaquePointer?
@@ -1357,7 +1376,9 @@ final class GridIndexStore: Sendable {
 
         if hasRaw && !nonRaws.isEmpty {
             let primary = assets.first(where: { $0.id == primaryId }) ?? nonRaws[0]
-            let ext = ((primary.originalFileName as NSString).pathExtension).lowercased()
+            let primaryExt = ((primary.originalFileName as NSString).pathExtension).lowercased()
+            let nonRawExt = ((nonRaws[0].originalFileName as NSString).pathExtension).lowercased()
+            let ext = rawExts.contains(primaryExt) ? nonRawExt : primaryExt
             if ext == "heic" || ext == "heif" {
                 return "HEIC + RAW"
             } else {
@@ -1374,18 +1395,32 @@ final class GridIndexStore: Sendable {
     /// Das primäre Asset behält `isStackChild = 0` und erhält bei RAW+JPEG-Paaren
     /// den Badge-Text (z.B. "JPEG + RAW"). Alle untergeordneten Assets (Children)
     /// erhalten `isStackChild = 1`, sodass sie aus der Haupt-Timeline / Grid ausgeblendet werden.
-    func applyStacks(_ stacks: [Stack]) {
-        writeQueue.sync {
-            guard let db else { return }
+    ///
+    /// - Returns: die Assets, deren Stapel-Zustand sich geändert hat. Der Sync
+    ///   läuft alle 30–60 s; ohne diese Auskunft lud das Raster jedes Mal neu,
+    ///   auch wenn kein Stapel anders war.
+    @discardableResult
+    func applyStacks(_ stacks: [Stack]) -> [String] {
+        var ziel: [String: StapelZeile] = [:]
+        for stack in stacks {
+            let badge = Self.badgeText(for: stack.assets, primaryId: stack.primaryAssetId)
+            for asset in stack.assets {
+                let isChild = (asset.id != stack.primaryAssetId)
+                ziel[asset.id] = StapelZeile(
+                    stackId: stack.id,
+                    isChild: isChild,
+                    badge: isChild ? nil : badge
+                )
+            }
+        }
+
+        return writeQueue.sync {
+            guard let db else { return [] }
+            let vorher = stapelZustand(db)
+            let kandidaten = Set(vorher.keys).union(ziel.keys).filter { vorher[$0] != ziel[$0] }
+            guard !kandidaten.isEmpty else { return [] }
+
             exec("BEGIN TRANSACTION")
-
-            // Vorherige Stack-Zuweisungen bereinigen
-            exec("""
-                UPDATE grid_assets
-                SET stackId = NULL, isStackChild = 0, stackBadgeText = NULL
-                WHERE stackId IS NOT NULL OR isStackChild != 0
-            """)
-
             let sql = """
                 UPDATE grid_assets
                 SET stackId = ?, isStackChild = ?, stackBadgeText = ?
@@ -1394,30 +1429,64 @@ final class GridIndexStore: Sendable {
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
                 exec("ROLLBACK")
-                return
+                return []
             }
             defer { sqlite3_finalize(stmt) }
 
-            for stack in stacks {
-                let badge = Self.badgeText(for: stack.assets, primaryId: stack.primaryAssetId)
-                for asset in stack.assets {
-                    let isChild = (asset.id != stack.primaryAssetId)
-                    sqlite3_reset(stmt)
-                    sqlite3_clear_bindings(stmt)
-                    bindText(stmt, 1, stack.id)
-                    sqlite3_bind_int(stmt, 2, isChild ? 1 : 0)
-                    if isChild {
-                        sqlite3_bind_null(stmt, 3)
-                    } else {
-                        bindOptionalText(stmt, 3, badge)
-                    }
-                    bindText(stmt, 4, asset.id)
-                    sqlite3_step(stmt)
+            var geaendert: [String] = []
+            for id in kandidaten {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                if let eintrag = ziel[id] {
+                    bindOptionalText(stmt, 1, eintrag.stackId)
+                    sqlite3_bind_int(stmt, 2, eintrag.isChild ? 1 : 0)
+                    bindOptionalText(stmt, 3, eintrag.badge)
+                } else {
+                    sqlite3_bind_null(stmt, 1)
+                    sqlite3_bind_int(stmt, 2, 0)
+                    sqlite3_bind_null(stmt, 3)
+                }
+                bindText(stmt, 4, id)
+                if sqlite3_step(stmt) == SQLITE_DONE, sqlite3_changes(db) > 0 {
+                    geaendert.append(id)
                 }
             }
 
+            if geaendert.isEmpty {
+                exec("ROLLBACK")
+                return []
+            }
             exec("COMMIT")
+            return geaendert.sorted()
         }
+    }
+
+    private struct StapelZeile: Equatable {
+        let stackId: String?
+        let isChild: Bool
+        let badge: String?
+    }
+
+    /// Alle Zeilen mit Stapel-Zustand. Nur auf der Schreibverbindung innerhalb
+    /// einer Transaktion aufrufen.
+    private func stapelZustand(_ db: OpaquePointer) -> [String: StapelZeile] {
+        let sql = """
+            SELECT id, stackId, isStackChild, stackBadgeText FROM grid_assets
+            WHERE stackId IS NOT NULL OR isStackChild != 0
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [:] }
+        defer { sqlite3_finalize(stmt) }
+        var result: [String: StapelZeile] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let id = columnOptionalText(stmt, 0) else { continue }
+            result[id] = StapelZeile(
+                stackId: columnOptionalText(stmt, 1),
+                isChild: sqlite3_column_int(stmt, 2) != 0,
+                badge: columnOptionalText(stmt, 3)
+            )
+        }
+        return result
     }
 
     /// Aktualisiert einen einzelnen Stack direkt (z.B. nach Upload eines RAW+JPEG-Paars).
@@ -1462,6 +1531,60 @@ final class GridIndexStore: Sendable {
         }
     }
 
+    /// Löst einen Stack auf und setzt alle Assets zurück auf ungestapelt.
+    /// Liefert die betroffenen Asset-IDs zurück, damit das UI benachrichtigt werden kann.
+    @discardableResult
+    func removeStack(stackId: String) -> [String] {
+        writeQueue.sync {
+            guard let db else { return [] }
+            exec("BEGIN TRANSACTION")
+
+            var affectedIds: [String] = []
+            let selectSql = "SELECT id FROM grid_assets WHERE stackId = ?"
+            var selectStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK {
+                bindText(selectStmt, 1, stackId)
+                while sqlite3_step(selectStmt) == SQLITE_ROW {
+                    if let id = columnOptionalText(selectStmt, 0) {
+                        affectedIds.append(id)
+                    }
+                }
+                sqlite3_finalize(selectStmt)
+            }
+
+            let updateSql = """
+                UPDATE grid_assets
+                SET stackId = NULL, isStackChild = 0, stackBadgeText = NULL
+                WHERE stackId = ?
+            """
+            var updateStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nil) == SQLITE_OK {
+                bindText(updateStmt, 1, stackId)
+                sqlite3_step(updateStmt)
+                sqlite3_finalize(updateStmt)
+            }
+
+            exec("COMMIT")
+            return affectedIds
+        }
+    }
+
+    /// Liefert die stackId eines Assets, falls es Teil eines Stacks ist.
+    func stackId(forAssetId id: String) -> String? {
+        readQueue.sync {
+            guard let db = readDB else { return nil }
+            let sql = "SELECT stackId FROM grid_assets WHERE id = ? LIMIT 1"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, id)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return columnOptionalText(stmt, 0)
+            }
+            return nil
+        }
+    }
+
     /// Lädt alle Assets eines Stacks (Primary zuerst, dann Children).
     func loadStackAssets(stackId: String) -> [Asset] {
         readQueue.sync {
@@ -1469,7 +1592,7 @@ final class GridIndexStore: Sendable {
             let sql = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
-                WHERE stackId = ?
+                WHERE stackId = ? AND isTrashed = 0
                 ORDER BY isStackChild ASC, fileCreatedAt DESC
             """
             var stmt: OpaquePointer?
@@ -1483,6 +1606,395 @@ final class GridIndexStore: Sendable {
                 result.append(assetFromRow(stmt))
             }
             return result
+        }
+    }
+
+    /// Reichert Album-Assets mit den lokalen Stapel-Metadaten (`stackId`,
+    /// `stackPrimaryAssetId`, `stackBadgeText`) aus SQLite an und klappt mehrfach im
+    /// selben Album enthaltene Stapel-Mitglieder auf einen einzigen sichtbaren
+    /// Vertreter zusammen.
+    ///
+    /// Warum beides zusammen gehört:
+    /// 1. Saubere Alben enthalten nur das Hauptbild (`HEIC`), aber Immichs
+    ///    `GET /api/albums/{id}` liefert nie `stackBadgeText` — ohne Anreicherung
+    ///    fehlte dort das „HEIC + RAW"-Abzeichen.
+    /// 2. Bestands-Alben (vor dem `isStackChild = 0`-Filter im Etappen-Scan angelegt
+    ///    oder extern synchronisiert) enthalten Hauptbild **und** RAW-Kind nebeneinander;
+    ///    hier klappt die Funktion das Kind hinter sein Hauptbild ein und merkt es für
+    ///    „Aus Album entfernen" vor.
+    /// 3. Enthält ein Album ausschließlich ein einzelnes Stapel-Kind ohne sein
+    ///    Hauptbild, bleibt dieses Einzelstück sichtbar (`group.count == 1`).
+    func aufbereitenFuerAlbum(_ assets: [Asset]) -> AlbumStapelAufbereitung {
+        guard !assets.isEmpty else {
+            return AlbumStapelAufbereitung(
+                sichtbareAssets: [],
+                versteckteGeschwisterJeSichtbarerId: [:]
+            )
+        }
+
+        struct StapelMitgliedInfo {
+            let id: String
+            let isChild: Bool
+            let badge: String?
+            let fileName: String
+        }
+
+        var indexZeilen: [String: StapelZeile] = [:]
+        var mitgliederJeStack: [String: [StapelMitgliedInfo]] = [:]
+
+        readQueue.sync {
+            guard let db = readDB else { return }
+
+            let ids = assets.map(\.id)
+            var offset = 0
+            while offset < ids.count {
+                let chunk = Array(ids[offset..<min(offset + 900, ids.count)])
+                offset += chunk.count
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                let sql = """
+                    SELECT id, stackId, isStackChild, stackBadgeText
+                    FROM grid_assets
+                    WHERE id IN (\(placeholders))
+                """
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
+                defer { sqlite3_finalize(stmt) }
+                for (i, id) in chunk.enumerated() {
+                    bindText(stmt, Int32(i + 1), id)
+                }
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let id = columnText(stmt, 0)
+                    indexZeilen[id] = StapelZeile(
+                        stackId: columnOptionalText(stmt, 1),
+                        isChild: sqlite3_column_int(stmt, 2) != 0,
+                        badge: columnOptionalText(stmt, 3)
+                    )
+                }
+            }
+
+            let stackIds = Array(
+                Set(indexZeilen.values.compactMap(\.stackId))
+                    .union(assets.compactMap(\.stackId))
+            )
+            var sOffset = 0
+            while sOffset < stackIds.count {
+                let chunk = Array(stackIds[sOffset..<min(sOffset + 900, stackIds.count)])
+                sOffset += chunk.count
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                let sql = """
+                    SELECT stackId, id, isStackChild, stackBadgeText, originalFileName
+                    FROM grid_assets
+                    WHERE stackId IN (\(placeholders)) AND isTrashed = 0
+                    ORDER BY isStackChild ASC, fileCreatedAt DESC
+                """
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
+                defer { sqlite3_finalize(stmt) }
+                for (i, sid) in chunk.enumerated() {
+                    bindText(stmt, Int32(i + 1), sid)
+                }
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    guard let sid = columnOptionalText(stmt, 0) else { continue }
+                    mitgliederJeStack[sid, default: []].append(
+                        StapelMitgliedInfo(
+                            id: columnText(stmt, 1),
+                            isChild: sqlite3_column_int(stmt, 2) != 0,
+                            badge: columnOptionalText(stmt, 3),
+                            fileName: columnText(stmt, 4)
+                        )
+                    )
+                }
+            }
+        }
+
+        // 1. Jedes Asset mit den besten verfügbaren Stapel-Metadaten anreichern.
+        var angereichert: [Asset] = []
+        angereichert.reserveCapacity(assets.count)
+
+        for asset in assets {
+            let zeile = indexZeilen[asset.id]
+            // Kennt der lokale Index die Zeile ohne `stackId`, wurde der Stapel evtl.
+            // lokal aufgelöst — `CachedAsset` (ohne `stackPrimaryAssetId`) darf ihn
+            // nicht wiederbeleben; eine frische Server-Antwort (mit `stackPrimaryAssetId`)
+            // hingegen schon, falls ein Web-Stapel noch nicht gesynct wurde.
+            let effektiveStackId: String? = {
+                if let zeile {
+                    if let sid = zeile.stackId { return sid }
+                    return asset.stackPrimaryAssetId != nil ? asset.stackId : nil
+                }
+                return asset.stackId
+            }()
+
+            guard let sid = effektiveStackId, !sid.isEmpty else {
+                if asset.stackId != nil || asset.stackBadgeText != nil {
+                    angereichert.append(asset.withStackInfo(
+                        stackId: nil, stackCount: nil, stackPrimaryAssetId: nil, stackBadgeText: nil
+                    ))
+                } else {
+                    angereichert.append(asset)
+                }
+                continue
+            }
+
+            let mitglieder = mitgliederJeStack[sid] ?? []
+            if mitglieder.count == 1 {
+                // Ein 1er-Rest im Index ist kein aktiver Stapel mehr.
+                angereichert.append(asset.withStackInfo(
+                    stackId: nil, stackCount: nil, stackPrimaryAssetId: nil, stackBadgeText: nil
+                ))
+                continue
+            }
+
+            let primaryInfo = mitglieder.first(where: { !$0.isChild }) ?? mitglieder.first
+            let primaryId = primaryInfo?.id
+                ?? asset.stackPrimaryAssetId
+                ?? ((zeile?.isChild == false) ? asset.id : nil)
+            let count = mitglieder.count >= 2 ? mitglieder.count : asset.stackCount
+
+            let badge: String? = {
+                if let b = zeile?.badge, !b.isEmpty { return b }
+                if let b = primaryInfo?.badge, !b.isEmpty { return b }
+                if let b = asset.stackBadgeText, !b.isEmpty { return b }
+                if mitglieder.count >= 2, let pid = primaryId {
+                    let hilfsAssets = mitglieder.map { m in
+                        Asset(
+                            id: m.id, type: .image, originalFileName: m.fileName,
+                            fileCreatedAt: "", fileModifiedAt: "", isFavorite: false
+                        )
+                    }
+                    return Self.badgeText(for: hilfsAssets, primaryId: pid)
+                }
+                return nil
+            }()
+
+            angereichert.append(asset.withStackInfo(
+                stackId: sid,
+                stackCount: count,
+                stackPrimaryAssetId: primaryId,
+                stackBadgeText: badge
+            ))
+        }
+
+        // 2. Mehrfach im selben Album vertretene Stapel auf ihren Vertreter einklaffen.
+        var gruppenJeStack: [String: [Asset]] = [:]
+        for asset in angereichert {
+            if let sid = asset.stackId {
+                gruppenJeStack[sid, default: []].append(asset)
+            }
+        }
+
+        var ausgeblendeteIds = Set<String>()
+        var vertreterErsatz: [String: Asset] = [:]
+        var versteckteGeschwister: [String: [String]] = [:]
+
+        for (sid, gruppe) in gruppenJeStack where gruppe.count >= 2 {
+            let vertreter = gruppe.first(where: { $0.isStackPrimary }) ?? gruppe[0]
+            let badge = vertreter.stackBadgeText ?? Self.badgeText(for: gruppe, primaryId: vertreter.id)
+            let aktualisierterVertreter = vertreter.withStackInfo(
+                stackId: sid,
+                stackCount: max(vertreter.stackCount ?? 0, gruppe.count),
+                stackPrimaryAssetId: vertreter.stackPrimaryAssetId ?? vertreter.id,
+                stackBadgeText: badge
+            )
+            vertreterErsatz[vertreter.id] = aktualisierterVertreter
+            let kinder = gruppe.map(\.id).filter { $0 != vertreter.id }
+            versteckteGeschwister[vertreter.id] = kinder
+            ausgeblendeteIds.formUnion(kinder)
+        }
+
+        var sichtbar: [Asset] = []
+        sichtbar.reserveCapacity(angereichert.count - ausgeblendeteIds.count)
+        for asset in angereichert where !ausgeblendeteIds.contains(asset.id) {
+            sichtbar.append(vertreterErsatz[asset.id] ?? asset)
+        }
+
+        return AlbumStapelAufbereitung(
+            sichtbareAssets: sichtbar,
+            versteckteGeschwisterJeSichtbarerId: versteckteGeschwister
+        )
+    }
+
+    /// Markiert `ids` im Grid-Index als gelöscht (`isTrashed = 1`) und befördert in
+    /// derselben Transaktion etwaige überlebende Stapel-Geschwister:
+    /// - Bleibt genau **ein** Mitglied übrig, löst sich der 1er-Stapel auf
+    ///   (`stackId = NULL, isStackChild = 0, stackBadgeText = NULL`) — so verschwindet
+    ///   etwa beim Löschen eines `DNG` sofort das „HEIC + RAW"-Abzeichen auf dem `HEIC`,
+    ///   und beim Löschen des `HEIC` wird das `DNG` sofort als eigenständiges Foto in
+    ///   Timeline und Album sichtbar.
+    /// - Bleiben **zwei oder mehr** Mitglieder übrig, übernimmt das erste verbleibende
+    ///   Mitglied `isStackChild = 0` samt neu berechnetem `stackBadgeText`.
+    @discardableResult
+    func trashAssetsAndPromoteStacks(ids: [String]) -> StapelNachfolgeErgebnis {
+        guard !ids.isEmpty else {
+            return StapelNachfolgeErgebnis(
+                nachfolgerJeGeloeschterId: [:],
+                geaenderteUeberlebendeIds: []
+            )
+        }
+
+        return writeQueue.sync {
+            guard let db else {
+                return StapelNachfolgeErgebnis(
+                    nachfolgerJeGeloeschterId: [:],
+                    geaenderteUeberlebendeIds: []
+                )
+            }
+
+            exec("BEGIN TRANSACTION")
+
+            // 1. Betroffene Stapel der zu löschenden IDs vorab lesen.
+            var geloeschterStackJeId: [String: String] = [:]
+            var offset = 0
+            while offset < ids.count {
+                let chunk = Array(ids[offset..<min(offset + 900, ids.count)])
+                offset += chunk.count
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                let sql = """
+                    SELECT id, stackId
+                    FROM grid_assets
+                    WHERE id IN (\(placeholders)) AND stackId IS NOT NULL
+                """
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    for (i, id) in chunk.enumerated() {
+                        bindText(stmt, Int32(i + 1), id)
+                    }
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let id = columnText(stmt, 0)
+                        if let sid = columnOptionalText(stmt, 1), !sid.isEmpty {
+                            geloeschterStackJeId[id] = sid
+                        }
+                    }
+                    sqlite3_finalize(stmt)
+                }
+            }
+
+            // 2. Gelöschte Zeilen auf isTrashed = 1 setzen und aus ihrem Stapel lösen.
+            let trashSql = """
+                UPDATE grid_assets
+                SET isTrashed = 1, stackId = NULL, isStackChild = 0, stackBadgeText = NULL
+                WHERE id = ?
+            """
+            var trashStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, trashSql, -1, &trashStmt, nil) == SQLITE_OK else {
+                exec("ROLLBACK")
+                return StapelNachfolgeErgebnis(
+                    nachfolgerJeGeloeschterId: [:],
+                    geaenderteUeberlebendeIds: []
+                )
+            }
+            for id in ids {
+                sqlite3_reset(trashStmt)
+                sqlite3_clear_bindings(trashStmt)
+                bindText(trashStmt, 1, id)
+                sqlite3_step(trashStmt)
+            }
+            sqlite3_finalize(trashStmt)
+
+            // 3. Überlebende Mitglieder je betroffenem Stapel prüfen und befördern.
+            var nachfolgerJeGeloeschterId: [String: Asset] = [:]
+            var geaenderteUeberlebende = Set<String>()
+
+            let betroffeneStacks = Set(geloeschterStackJeId.values)
+            if !betroffeneStacks.isEmpty {
+                let selectSql = """
+                    SELECT \(Self.selectColumns)
+                    FROM grid_assets
+                    WHERE stackId = ? AND isTrashed = 0
+                    ORDER BY isStackChild ASC, fileCreatedAt DESC
+                """
+                let dissolveSql = """
+                    UPDATE grid_assets
+                    SET stackId = NULL, isStackChild = 0, stackBadgeText = NULL
+                    WHERE id = ?
+                """
+                let updateMemberSql = """
+                    UPDATE grid_assets
+                    SET stackId = ?, isStackChild = ?, stackBadgeText = ?
+                    WHERE id = ?
+                """
+
+                var selectStmt: OpaquePointer?
+                var dissolveStmt: OpaquePointer?
+                var updateMemberStmt: OpaquePointer?
+                let selectOK = sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK
+                let dissolveOK = sqlite3_prepare_v2(db, dissolveSql, -1, &dissolveStmt, nil) == SQLITE_OK
+                let updateOK = sqlite3_prepare_v2(db, updateMemberSql, -1, &updateMemberStmt, nil) == SQLITE_OK
+
+                defer {
+                    sqlite3_finalize(selectStmt)
+                    sqlite3_finalize(dissolveStmt)
+                    sqlite3_finalize(updateMemberStmt)
+                }
+
+                if selectOK && dissolveOK && updateOK {
+                    for sid in betroffeneStacks {
+                        sqlite3_reset(selectStmt)
+                        sqlite3_clear_bindings(selectStmt)
+                        bindText(selectStmt, 1, sid)
+
+                        var ueberlebende: [Asset] = []
+                        while sqlite3_step(selectStmt) == SQLITE_ROW {
+                            ueberlebende.append(assetFromRow(selectStmt))
+                        }
+
+                        guard !ueberlebende.isEmpty else { continue }
+
+                        let neuesHauptAsset: Asset
+                        if ueberlebende.count == 1 {
+                            let einzel = ueberlebende[0]
+                            sqlite3_reset(dissolveStmt)
+                            sqlite3_clear_bindings(dissolveStmt)
+                            bindText(dissolveStmt, 1, einzel.id)
+                            sqlite3_step(dissolveStmt)
+
+                            neuesHauptAsset = einzel.withStackInfo(
+                                stackId: nil,
+                                stackCount: nil,
+                                stackPrimaryAssetId: nil,
+                                stackBadgeText: nil
+                            )
+                            geaenderteUeberlebende.insert(einzel.id)
+                        } else {
+                            let haupt = ueberlebende[0]
+                            let badge = Self.badgeText(for: ueberlebende, primaryId: haupt.id)
+
+                            for (idx, mitglied) in ueberlebende.enumerated() {
+                                let isChild = idx > 0
+                                sqlite3_reset(updateMemberStmt)
+                                sqlite3_clear_bindings(updateMemberStmt)
+                                bindText(updateMemberStmt, 1, sid)
+                                sqlite3_bind_int(updateMemberStmt, 2, isChild ? 1 : 0)
+                                if isChild {
+                                    sqlite3_bind_null(updateMemberStmt, 3)
+                                } else {
+                                    bindOptionalText(updateMemberStmt, 3, badge)
+                                }
+                                bindText(updateMemberStmt, 4, mitglied.id)
+                                sqlite3_step(updateMemberStmt)
+                                geaenderteUeberlebende.insert(mitglied.id)
+                            }
+
+                            neuesHauptAsset = haupt.withStackInfo(
+                                stackId: sid,
+                                stackCount: ueberlebende.count,
+                                stackPrimaryAssetId: haupt.id,
+                                stackBadgeText: badge
+                            )
+                        }
+
+                        for (delId, delSid) in geloeschterStackJeId where delSid == sid {
+                            nachfolgerJeGeloeschterId[delId] = neuesHauptAsset
+                        }
+                    }
+                }
+            }
+
+            exec("COMMIT")
+            return StapelNachfolgeErgebnis(
+                nachfolgerJeGeloeschterId: nachfolgerJeGeloeschterId,
+                geaenderteUeberlebendeIds: geaenderteUeberlebende.sorted()
+            )
         }
     }
 
@@ -2221,6 +2733,32 @@ final class GridIndexStore: Sendable {
         }
     }
 
+    /// Liest den aktuellen `isFavorite`-Zustand der angegebenen Asset-IDs aus SQLite.
+    func favoriteStates(for ids: [String]) -> [String: Bool] {
+        guard !ids.isEmpty else { return [:] }
+        var result: [String: Bool] = [:]
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            let sql = "SELECT id, isFavorite FROM grid_assets WHERE id IN (\(placeholders))"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            for (index, id) in ids.enumerated() {
+                bindText(stmt, Int32(index + 1), id)
+            }
+            result.reserveCapacity(ids.count)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let c = sqlite3_column_text(stmt, 0) {
+                    let id = String(cString: c)
+                    let isFav = sqlite3_column_int(stmt, 1) != 0
+                    result[id] = isFav
+                }
+            }
+        }
+        return result
+    }
+
     /// Update the archive status of an asset natively in SQLite
     func updateArchive(id: String, isArchived: Bool) {
         writeQueue.sync {
@@ -2348,6 +2886,87 @@ final class GridIndexStore: Sendable {
         return plan
     }
 
+    /// Liefert die IDs aller sichtbaren Waisen ohne GPS, die laut `ScreenshotDetector`
+    /// Bildschirmfotos oder Bildschirmaufnahmen sind.
+    ///
+    /// Eigene Abfrage statt Spalten in `geoScanSQL`: So bleibt `idx_grid_geo_scan`
+    /// für den Hauptscan über 155 000 Zeilen ein reiner Covering-Index.
+    func loadGeoScreenshotIds() -> Set<String> {
+        var ids: Set<String> = []
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let sql = """
+                SELECT id, originalFileName, cameraMake, cameraModel, fileSizeInByte
+                FROM grid_assets
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+                  AND exifCheckedAt IS NOT NULL
+                  AND latitude IS NULL AND longitude IS NULL
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = columnText(stmt, 0)
+                let fileName = columnText(stmt, 1)
+                let make = columnOptionalText(stmt, 2)
+                let model = columnOptionalText(stmt, 3)
+                let size = columnOptionalInt(stmt, 4)
+                if ScreenshotDetector.isGeoScreenshotOrRecording(
+                    originalFileName: fileName,
+                    cameraMake: make,
+                    cameraModel: model,
+                    fileSizeInByte: size
+                ) {
+                    ids.insert(id)
+                }
+            }
+        }
+        return ids
+    }
+
+    /// Lädt alle sichtbaren Aufnahmen mit Koordinaten inklusive Stadt und Land für
+    /// die Auswahl bekannter Foto-Orte beim Bulk-Geotagging.
+    func loadKnownLocationRows() -> [GeoKnownLocationRow] {
+        var rows: [GeoKnownLocationRow] = []
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let sql = """
+                SELECT id, CAST(strftime('%s', fileCreatedAt) AS INTEGER),
+                       latitude, longitude, city, country
+                FROM grid_assets NOT INDEXED
+                WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                AppLogger.app.error("Bekannte Orte: Abfrage konnte nicht vorbereitet werden: \(String(cString: sqlite3_errmsg(db)))")
+                return
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            rows.reserveCapacity(64_000)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let timestamp: Date
+                if sqlite3_column_type(stmt, 1) != SQLITE_NULL {
+                    timestamp = Date(timeIntervalSince1970: Double(sqlite3_column_int64(stmt, 1)))
+                } else {
+                    timestamp = .distantPast
+                }
+                guard let latitude = columnOptionalDouble(stmt, 2),
+                      let longitude = columnOptionalDouble(stmt, 3) else { continue }
+                rows.append(GeoKnownLocationRow(
+                    id: columnText(stmt, 0),
+                    timestamp: timestamp,
+                    latitude: latitude,
+                    longitude: longitude,
+                    city: columnOptionalText(stmt, 4),
+                    country: columnOptionalText(stmt, 5)
+                ))
+            }
+        }
+        return rows
+    }
+
     // MARK: - Etappen-Scan
 
     /// Die Projektion für die Albumvorschläge: sieben Spalten statt der 22 aus
@@ -2372,7 +2991,7 @@ final class GridIndexStore: Sendable {
         SELECT id, CAST(strftime('%s', fileCreatedAt) AS INTEGER),
                latitude, longitude, city, country, exifCheckedAt
         FROM grid_assets NOT INDEXED
-        WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0
+        WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
     """
 
     /// Lädt die sichtbaren Zeilen für die Etappenerkennung.
@@ -2587,7 +3206,8 @@ final class GridIndexStore: Sendable {
     private static let dupeScanSQL = """
         SELECT id, type, originalFileName, CAST(strftime('%s', fileCreatedAt) AS INTEGER),
                fileSizeInByte, width, height, thumbhash, duration, isFavorite,
-               latitude, longitude, cameraMake, cameraModel, lensModel, city, country, checksum
+               latitude, longitude, cameraMake, cameraModel, lensModel, city, country, checksum,
+               stackId
         FROM grid_assets NOT INDEXED
         WHERE isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND exifCheckedAt IS NOT NULL
     """
@@ -2665,7 +3285,8 @@ final class GridIndexStore: Sendable {
                     isFavorite: sqlite3_column_int(stmt, 9) != 0,
                     hasCoordinates: latitude != nil && longitude != nil,
                     exifCompleteness: filled / Self.dupeExifFieldCount,
-                    checksum: columnOptionalText(stmt, 17)
+                    checksum: columnOptionalText(stmt, 17),
+                    stackId: columnOptionalText(stmt, 18)
                 ))
             }
 
@@ -2928,10 +3549,14 @@ final class GridIndexStore: Sendable {
             }
             sqlite3_finalize(stmt)
 
+            // Bereichsabfrage (`fileCreatedAt >= ? AND fileCreatedAt < ?`), damit SQLite
+            // `idx_grid_visible` direkt eingrenzt statt für jedes Jahr alle sichtbaren
+            // Zeilen vollständig zu scannen (`substr(...) = ?` nutzt den B-Baum nicht).
             let coverSQL = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
-                WHERE substr(fileCreatedAt, 1, 4) = ?
+                WHERE fileCreatedAt >= ? AND fileCreatedAt < ?
+                  AND substr(fileCreatedAt, 1, 4) = ?
                   AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
                 ORDER BY isFavorite DESC, (latitude IS NOT NULL) DESC, fileCreatedAt DESC
                 LIMIT 1
@@ -2941,6 +3566,8 @@ final class GridIndexStore: Sendable {
                 for item in yearCounts {
                     sqlite3_reset(coverStmt)
                     bindText(coverStmt, 1, item.year)
+                    bindText(coverStmt, 2, item.year + "\u{FFFF}")
+                    bindText(coverStmt, 3, item.year)
                     if sqlite3_step(coverStmt) == SQLITE_ROW {
                         let asset = assetFromRow(coverStmt)
                         results.append((year: item.year, totalCount: item.count, coverAsset: asset))
@@ -2977,10 +3604,14 @@ final class GridIndexStore: Sendable {
             }
             sqlite3_finalize(stmt)
 
+            // Bereichsabfrage über `fileCreatedAt`, damit SQLite im Index `idx_grid_visible`
+            // direkt in den jeweiligen Monat springt, statt bei 300+ Monaten jedes Mal
+            // die gesamte Tabelle zu durchsuchen (~2,2 s → ~50 ms bei 112 000 Fotos).
             let candSQL = """
                 SELECT \(Self.selectColumns)
                 FROM grid_assets
-                WHERE substr(fileCreatedAt, 1, 7) = ?
+                WHERE fileCreatedAt >= ? AND fileCreatedAt < ?
+                  AND substr(fileCreatedAt, 1, 7) = ?
                   AND isTrashed = 0 AND isArchived = 0 AND isHidden = 0 AND isStackChild = 0
                 ORDER BY isFavorite DESC, (latitude IS NOT NULL) DESC, fileCreatedAt DESC
                 LIMIT 12
@@ -2990,6 +3621,8 @@ final class GridIndexStore: Sendable {
                 for item in monthCounts {
                     sqlite3_reset(candStmt)
                     bindText(candStmt, 1, item.month)
+                    bindText(candStmt, 2, item.month + "\u{FFFF}")
+                    bindText(candStmt, 3, item.month)
                     var cands: [Asset] = []
                     while sqlite3_step(candStmt) == SQLITE_ROW {
                         cands.append(assetFromRow(candStmt))
@@ -3106,6 +3739,54 @@ final class GridIndexStore: Sendable {
             guard db != nil else { return }
             exec("DELETE FROM grid_assets")
         }
+    }
+
+    /// Schneller SQLite-Lookup für den lokalen Abgleich bei Apple-Photos-, Album- und
+    /// Favoriten-Sync. Spart das Materialisieren von 100 000+ `CachedAsset`-Objekten
+    /// über SwiftData sowie tausende Einzel-HTTP-Requests gegen den Server.
+    ///
+    /// - Returns:
+    ///   - `byFilename`: `originalFileName → [(id, createdAt)]` (inklusive Papierkorb)
+    ///   - `activeIds`: alle nicht gelöschten Asset-IDs (`isTrashed = 0`)
+    ///   - `favoriteIds`: alle aktiven Favoriten-IDs (`isFavorite = 1 AND isTrashed = 0`)
+    func loadLocalSyncLookup() -> (
+        byFilename: [String: [(id: String, createdAt: String)]],
+        activeIds: Set<String>,
+        favoriteIds: Set<String>
+    ) {
+        var byFilename: [String: [(id: String, createdAt: String)]] = [:]
+        var activeIds = Set<String>()
+        var favoriteIds = Set<String>()
+
+        readQueue.sync {
+            guard let db = readDB else { return }
+            let sql = "SELECT id, originalFileName, fileCreatedAt, isTrashed, isFavorite FROM grid_assets"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+
+            byFilename.reserveCapacity(64_000)
+            activeIds.reserveCapacity(64_000)
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = columnText(stmt, 0)
+                let filename = columnText(stmt, 1)
+                let createdAt = columnText(stmt, 2)
+                let isTrashed = sqlite3_column_int(stmt, 3) != 0
+                let isFavorite = sqlite3_column_int(stmt, 4) != 0
+
+                if !filename.isEmpty {
+                    byFilename[filename, default: []].append((id, createdAt))
+                }
+                if !isTrashed {
+                    activeIds.insert(id)
+                    if isFavorite {
+                        favoriteIds.insert(id)
+                    }
+                }
+            }
+        }
+        return (byFilename, activeIds, favoriteIds)
     }
 
     // `populateFromSwiftData(modelContext:)` stand hier: eine „einmalige Migration",
@@ -3228,4 +3909,25 @@ final class GridIndexStore: Sendable {
             livePhotoVideoId: columnOptionalText(stmt, 17)
         )
     }
+}
+
+/// Ergebnis der lokalen Stapel-Aufbereitung für ein Album.
+struct AlbumStapelAufbereitung: Sendable {
+    /// Sichtbare Assets für das Album-Raster (mit angereichertem `stackBadgeText` und
+    /// eingeklappten Stapel-Kindern, sofern ihr Hauptbild im selben Album liegt).
+    let sichtbareAssets: [Asset]
+    /// Pro sichtbarer Asset-ID die im selben Album mitenthaltenen, eingeklappten
+    /// Stapel-Geschwister — damit „Aus Album entfernen" auch versteckte Kinder aus dem
+    /// Server-Album entfernt.
+    let versteckteGeschwisterJeSichtbarerId: [String: [String]]
+}
+
+/// Ergebnis der lokalen Stapel-Beförderung beim Verschieben von Assets in den Papierkorb.
+struct StapelNachfolgeErgebnis: Sendable {
+    /// Für jede gelöschte Asset-ID, deren Stapel mindestens ein überlebendes Mitglied
+    /// behält, das neue (bzw. verbleibende) Haupt-Asset des Stapels.
+    let nachfolgerJeGeloeschterId: [String: Asset]
+    /// Überlebende Asset-IDs, deren Stapel-Spalten sich geändert haben und im
+    /// Timeline-Repository neu geladen werden müssen.
+    let geaenderteUeberlebendeIds: [String]
 }

@@ -306,10 +306,35 @@ final class SyncEngine {
     private let modelContext: ModelContext
     /// Optional stream client — uses session token auth for efficient sync
     private var syncStreamClient: SyncStreamClient?
+    private var currentSessionToken: String?
+    /// Store-Reset und Papierkorb-Korruption sind persistente Schäden, die schon beim
+    /// ersten Sync nach dem App-Start sichtbar sind. Sobald einmal erfolgreich geprüft,
+    /// sparen wir die `fetchCount`-Scans über 100 000+ `CachedAsset` auf dem `@MainActor`
+    /// in allen folgenden 30–60-s-Zyklen.
+    private var hasCheckedStoreReset = false
+    private var hasCheckedTrashCorruption = false
+    /// Letzter Lauf der Zusatz-Abgleiche (Alben, Stacks, Datei-Cache-Housekeeping) im
+    /// Stream-Pfad. Im Leerlauf (`.schedule` mit 0 Stream-Änderungen) reicht ein Abgleich
+    /// alle 5 Minuten statt alle 30 s — WebSocket-Events (`.push`), `.launch`, `.manual`,
+    /// `.foreground` und `.reconnect` laufen weiterhin sofort.
+    private var lastAuxiliarySyncAt: Date?
+    static let idleAuxiliaryCooldown: TimeInterval = 300
+
+    static func shouldRunAuxiliarySync(
+        trigger: SyncTrigger,
+        streamChangedCount: Int,
+        lastAuxiliarySyncAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        if trigger != .schedule || streamChangedCount > 0 { return true }
+        guard let last = lastAuxiliarySyncAt else { return true }
+        return now.timeIntervalSince(last) >= idleAuxiliaryCooldown
+    }
 
     init(apiClient: ImmichAPIClient, modelContext: ModelContext, sessionToken: String? = nil) {
         self.apiClient = apiClient
         self.modelContext = modelContext
+        self.currentSessionToken = sessionToken
         if let sessionToken {
             self.syncStreamClient = SyncStreamClient(
                 baseURL: apiClient.baseURL,
@@ -322,6 +347,25 @@ final class SyncEngine {
             // praktisch nur per SQLite-Blick in den Store.
             AppLogger.sync.info("Sync Stream nicht verfügbar (kein Session-Token, z. B. bei API-Key-Auth) — jeder Sync läuft über Polling")
         }
+    }
+
+    /// Aktualisiert den Session-Token nach einem Hintergrund-Connect beim Kaltstart,
+    /// ohne die laufende SyncEngine-Instanz ersetzen zu müssen.
+    func updateSessionToken(_ sessionToken: String?) {
+        guard sessionToken != currentSessionToken else { return }
+        currentSessionToken = sessionToken
+        if let sessionToken {
+            syncStreamClient = SyncStreamClient(baseURL: apiClient.baseURL, sessionToken: sessionToken)
+        } else {
+            syncStreamClient = nil
+        }
+    }
+
+    /// Baut den `SyncStreamClient` nach einem Routenwechsel (`Lokal` ↔ `Remote`) auf
+    /// der neuen `apiClient.baseURL` neu auf.
+    func refreshStreamClientRoute() {
+        guard let sessionToken = currentSessionToken else { return }
+        syncStreamClient = SyncStreamClient(baseURL: apiClient.baseURL, sessionToken: sessionToken)
     }
 
     // MARK: - Public API
@@ -373,21 +417,30 @@ final class SyncEngine {
         // so EXIF data (cameraModel, city, country, …) gets repopulated.
         // `try?` liefert `nil` für „nicht lesbar" — das ist **nicht** dasselbe wie
         // „leer", und der Unterschied entscheidet hier über einen Komplett-Neuabgleich.
-        let cachedCount = try? modelContext.fetchCount(FetchDescriptor<CachedAsset>())
-        let gridCount = GridIndexStore.shared.totalAssetCount()
-        let storeWasReset = Self.storeLooksReset(
-            cachedCount: cachedCount,
-            gridCount: gridCount,
-            isInitialSyncComplete: syncState.isInitialSyncComplete
-        )
-        if cachedCount == nil {
-            AppLogger.sync.error("Store-Reset-Erkennung übersprungen: CachedAsset-Zählung nicht lesbar")
-        }
+        if !hasCheckedStoreReset {
+            let container = modelContext.container
+            let (cachedCount, gridCount) = await Task.detached(priority: .utility) {
+                let bg = ModelContext(container)
+                let cached = try? bg.fetchCount(FetchDescriptor<CachedAsset>())
+                let grid = GridIndexStore.shared.totalAssetCount()
+                return (cached, grid)
+            }.value
+            let storeWasReset = Self.storeLooksReset(
+                cachedCount: cachedCount,
+                gridCount: gridCount,
+                isInitialSyncComplete: syncState.isInitialSyncComplete
+            )
+            if cachedCount == nil {
+                AppLogger.sync.error("Store-Reset-Erkennung übersprungen: CachedAsset-Zählung nicht lesbar")
+            } else {
+                hasCheckedStoreReset = true
+            }
 
-        if storeWasReset {
-            AppLogger.sync.warning("Store-reset detected (cached=\(cachedCount ?? -1), grid=\(gridCount)) — forcing full re-sync to restore EXIF data")
-            syncState.isInitialSyncComplete = false
-            syncState.exifBackfillCompletedAt = nil
+            if storeWasReset {
+                AppLogger.sync.warning("Store-reset detected (cached=\(cachedCount ?? -1), grid=\(gridCount)) — forcing full re-sync to restore EXIF data")
+                syncState.isInitialSyncComplete = false
+                syncState.exifBackfillCompletedAt = nil
+            }
         }
 
         // Beginnt nach der Store-Reset-Prüfung: Deren `fetchCount` über alle
@@ -584,7 +637,7 @@ final class SyncEngine {
         // Try Sync Stream API first (if available and not previously marked unsupported).
         if !needsDeepSync, syncState.serverSupportsStream, let streamClient = syncStreamClient {
             do {
-                let result = try await performStreamDeltaSync(syncState: syncState, client: streamClient)
+                let result = try await performStreamDeltaSync(syncState: syncState, client: streamClient, trigger: trigger)
 
                 // Einmaliger Checksum-Backfill nach der Grid-v9-Migration:
                 // Checkpoint für AssetV2 löschen und sofort erneut streamen —
@@ -693,18 +746,26 @@ final class SyncEngine {
         do {
             // One-time fix: if >90% of assets are marked as trashed, the cache
             // was corrupted by the broken getTrash() sync. Purge and re-sync.
-            let trashedPredicate = #Predicate<CachedAsset> { $0.isTrashed == true }
-            let trashedCount = try modelContext.fetchCount(FetchDescriptor(predicate: trashedPredicate))
-            let totalLocal = try modelContext.fetchCount(FetchDescriptor<CachedAsset>())
+            if !hasCheckedTrashCorruption {
+                let container = modelContext.container
+                let (trashedCount, totalLocal) = try await Task.detached(priority: .utility) {
+                    let bg = ModelContext(container)
+                    let trashedPredicate = #Predicate<CachedAsset> { $0.isTrashed == true }
+                    let trashed = try bg.fetchCount(FetchDescriptor(predicate: trashedPredicate))
+                    let total = try bg.fetchCount(FetchDescriptor<CachedAsset>())
+                    return (trashed, total)
+                }.value
+                hasCheckedTrashCorruption = true
 
-            if trashedCount > 0 && totalLocal > 0 && Double(trashedCount) / Double(totalLocal) > 0.9 {
-                AppLogger.sync.warning("Detected corrupted trash flags (\(trashedCount)/\(totalLocal)) — purging cache for fresh sync")
-                try modelContext.delete(model: CachedAsset.self)
-                try modelContext.save()
-                syncState.isInitialSyncComplete = false
-                try modelContext.save()
-                isSyncing = false
-                return await performInitialSync(syncState: syncState)
+                if trashedCount > 0 && totalLocal > 0 && Double(trashedCount) / Double(totalLocal) > 0.9 {
+                    AppLogger.sync.warning("Detected corrupted trash flags (\(trashedCount)/\(totalLocal)) — purging cache for fresh sync")
+                    try modelContext.delete(model: CachedAsset.self)
+                    try modelContext.save()
+                    syncState.isInitialSyncComplete = false
+                    try modelContext.save()
+                    isSyncing = false
+                    return await performInitialSync(syncState: syncState)
+                }
             }
 
             // Quick check: did the total count change?
@@ -1140,7 +1201,11 @@ final class SyncEngine {
         }
     }
 
-    private func performStreamDeltaSync(syncState: SyncState, client: SyncStreamClient) async throws -> SyncRunResult {
+    private func performStreamDeltaSync(
+        syncState: SyncState,
+        client: SyncStreamClient,
+        trigger: SyncTrigger = .launch
+    ) async throws -> SyncRunResult {
         isSyncing = true
         syncIsStreaming = true
         syncError = nil
@@ -1333,45 +1398,53 @@ final class SyncEngine {
         AppLogger.sync.info("Stream sync: \(run.upserts) upserts, \(run.deletes) deletes, \(run.exifApplied) EXIF in \(duration)s")
         postChangedNotification(ids: run.changedIds, metadataIds: run.metadataIds)
 
-        // Albums are not part of the AssetsV1 stream — mirror them here so album
-        // changes made in web (create/rename/delete/add assets) appear without
-        // relying on the polling fallback. Non-fatal on error.
-        do {
-            try await syncAlbumsToCache()
-        } catch {
-            AppLogger.sync.warning("Album sync after stream failed (non-fatal): \(error)")
-        }
+        if Self.shouldRunAuxiliarySync(
+            trigger: trigger,
+            streamChangedCount: total + run.changedIds.count,
+            lastAuxiliarySyncAt: lastAuxiliarySyncAt
+        ) {
+            lastAuxiliarySyncAt = Date()
 
-        // Stacks are also independent of stream sync — sync them here.
-        await syncStacksToCache()
-
-        // --- Local File Cache: post-sync housekeeping (low-priority background task) ---
-        // IMPORTANT: This block must mirror the identical block in performDeltaSync.
-        // Without it, the file cache is never populated when stream sync is active,
-        // because the polling path (which had the cache triggering) is never reached.
-        let cacheDays = AppEnvironment.defaults.integer(forKey: "localFileCacheDays")
-        let capturedContainer = modelContext.container
-        let capturedClient = apiClient
-        Task.detached(priority: .background) {
-            // 1. Evict expired files
-            await LocalFileCacheManager.shared.evictExpired(container: capturedContainer, cacheDays: cacheDays)
-            // 1b. Evict permanently deleted assets from this stream run
-            if !run.deletedIds.isEmpty {
-                await LocalFileCacheManager.shared.evict(ids: run.deletedIds, container: capturedContainer)
+            // Albums are not part of the AssetsV1 stream — mirror them here so album
+            // changes made in web (create/rename/delete/add assets) appear without
+            // relying on the polling fallback. Non-fatal on error.
+            do {
+                try await syncAlbumsToCache()
+            } catch {
+                AppLogger.sync.warning("Album sync after stream failed (non-fatal): \(error)")
             }
-            // 2. Download pending assets (only if cache is enabled)
-            if cacheDays > 0 {
-                await LocalFileCacheManager.shared.downloadPendingAssets(
+
+            // Stacks are also independent of stream sync — sync them here.
+            await syncStacksToCache()
+
+            // --- Local File Cache: post-sync housekeeping (low-priority background task) ---
+            // IMPORTANT: This block must mirror the identical block in performDeltaSync.
+            // Without it, the file cache is never populated when stream sync is active,
+            // because the polling path (which had the cache triggering) is never reached.
+            let cacheDays = AppEnvironment.defaults.integer(forKey: "localFileCacheDays")
+            let capturedContainer = modelContext.container
+            let capturedClient = apiClient
+            Task.detached(priority: .background) {
+                // 1. Evict expired files
+                await LocalFileCacheManager.shared.evictExpired(container: capturedContainer, cacheDays: cacheDays)
+                // 1b. Evict permanently deleted assets from this stream run
+                if !run.deletedIds.isEmpty {
+                    await LocalFileCacheManager.shared.evict(ids: run.deletedIds, container: capturedContainer)
+                }
+                // 2. Download pending assets (only if cache is enabled)
+                if cacheDays > 0 {
+                    await LocalFileCacheManager.shared.downloadPendingAssets(
+                        container: capturedContainer,
+                        apiClient: capturedClient,
+                        cacheDays: cacheDays
+                    )
+                }
+                // 3. Download offline albums
+                await OfflineDownloadManager.shared.syncOfflineAlbums(
                     container: capturedContainer,
-                    apiClient: capturedClient,
-                    cacheDays: cacheDays
+                    apiClient: capturedClient
                 )
             }
-            // 3. Download offline albums
-            await OfflineDownloadManager.shared.syncOfflineAlbums(
-                container: capturedContainer,
-                apiClient: capturedClient
-            )
         }
 
         return SyncRunResult(changedCount: run.changedIds.count, transport: .stream)
@@ -1435,8 +1508,15 @@ final class SyncEngine {
     private func syncStacksToCache() async {
         do {
             let stacks = try await apiClient.getStacks()
-            GridIndexStore.shared.applyStacks(stacks)
-            AppLogger.sync.info("Stack sync: applied \(stacks.count) stacks to GridIndexStore")
+            let geaendert = await Task.detached(priority: .utility) {
+                GridIndexStore.shared.applyStacks(stacks)
+            }.value
+            AppLogger.sync.info("Stack sync: applied \(stacks.count) stacks to GridIndexStore (\(geaendert.count) assets changed)")
+            // Nur bei echter Änderung und mit IDs: Das Raster blendet dann
+            // gezielt Kinder aus bzw. ein, statt bei jedem Sync neu zu laden.
+            if !geaendert.isEmpty {
+                NotificationCenter.default.post(name: .assetsDidChange, object: nil, userInfo: ["ids": geaendert])
+            }
         } catch {
             AppLogger.sync.warning("Stack sync failed (non-fatal): \(error)")
         }

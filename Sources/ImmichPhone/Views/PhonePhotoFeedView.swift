@@ -20,6 +20,7 @@ struct PhonePhotoFeedView: View {
     let apiClient: ImmichAPIClient
 
     @Environment(ConnectionManager.self) private var connection
+    @State private var zeigtSwipe = false
 
     /// Dieser Reiter lädt **ausschließlich** über `searchAssets` vom Server und
     /// hat keinen Cache — anders als das Albumraster, das aus SwiftData
@@ -75,6 +76,26 @@ struct PhonePhotoFeedView: View {
             }
             .refreshable {
                 await feed.ladeVonVorne(apiClient: apiClient)
+            }
+            .toolbar {
+                if PhoneSwipeModus.istEinstiegSichtbar(rechte: connection.keyRechte, istOffline: istOffline) {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            zeigtSwipe = true
+                        } label: {
+                            Label(PhoneSwipeTexts.einstieg, systemImage: "rectangle.stack")
+                        }
+                    }
+                }
+            }
+            .fullScreenCover(isPresented: $zeigtSwipe) {
+                PhoneSwipeView(
+                    apiClient: apiClient,
+                    rechte: connection.keyRechte,
+                    onGeloescht: { ids in
+                        Task { await feed.entferne(assetIds: Set(ids)) }
+                    }
+                )
             }
         }
         .phoneOfflineProgressBanner()

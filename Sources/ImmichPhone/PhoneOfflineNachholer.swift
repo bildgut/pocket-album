@@ -13,10 +13,17 @@ struct PhoneOfflineNachholer: ViewModifier {
     let container: ModelContainer
     @Environment(\.scenePhase) private var phase
     @State private var lebensdauer = PhoneHintergrundLebensdauer()
+    @State private var thumbnails = PhoneOfflineThumbnailWaermer()
 
     func body(content: Content) -> some View {
         content
             .task(id: connection.apiClient.map(ObjectIdentifier.init)) { stosseAn() }
+            // Ohne Netz hängt ein Lauf nur in den Fristen und zeigt „Vorbereitung…“
+            // (Gerätebefund 26.10.2026). Geladene Dateien bleiben liegen; beim
+            // Wiederverbinden entsteht ein neuer Client, und der `.task` oben stößt an.
+            .onChange(of: connection.state.isOffline) { _, offline in
+                if offline { Task { await OfflineDownloadManager.shared.cancel(grund: "Offline") } }
+            }
             .onChange(of: phase) { _, neu in
                 if neu == .active { stosseAn() }
                 if neu == .background {
@@ -31,6 +38,9 @@ struct PhoneOfflineNachholer: ViewModifier {
             .onChange(of: OfflineSyncProgress.shared.isActive) { _, laeuft in
                 lebensdauer.syncWechsel(syncLaeuft: laeuft)
                 haltBildschirmWach(syncLaeuft: laeuft, aktiv: phase == .active)
+                if !laeuft, !AppEnvironment.isRunningTests {
+                    thumbnails.waerme(connection: connection, container: container)
+                }
             }
     }
 
@@ -42,9 +52,13 @@ struct PhoneOfflineNachholer: ViewModifier {
     }
 
     private func stosseAn() {
-        guard !AppEnvironment.isRunningTests, let client = connection.apiClient else { return }
+        guard !AppEnvironment.isRunningTests, connection.state.isConnected,
+              let client = connection.apiClient else { return }
         let c = container
         Task { await OfflineDownloadManager.shared.nachholen(container: c, apiClient: client) }
+        // Auch ohne Lauf (Cooldown): Vermerke von vor diesem Vorwärmer haben noch
+        // keine Thumbnails im Cache.
+        thumbnails.waerme(connection: connection, container: container)
     }
 }
 

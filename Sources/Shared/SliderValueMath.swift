@@ -1,5 +1,15 @@
 import Foundation
 
+/// Kennlinie für die Umrechnung zwischen Reglerwert und visuellem Spuranteil (`0...1`).
+enum SliderResponseCurve: Equatable, Sendable {
+    /// Lineare Zuordnung über den gesamten Wertebereich.
+    case linear
+    /// Feineres Auflösungsvermögen rund um den Neutralwert (`exponent > 1` = präziser in der Mitte).
+    case softCenter(exponent: Double = 1.35)
+    /// Perzeptuell ausgewogene Kelvin-Skala über verschobene Mireds (~5200 K Tageslicht in der Spurmitte).
+    case miredTemperature
+}
+
 /// Die Rechenkerne hinter den Reglern des Bildeditors.
 ///
 /// Sie liegen ausserhalb der Ansicht, weil hier die Feinabstimmung sitzt: wie weit
@@ -7,6 +17,96 @@ import Foundation
 /// Tastenschritt ist und was eine getippte Zahl bedeutet. In der Ansicht waere davon
 /// nichts pruefbar.
 enum SliderValueMath {
+
+    private static let miredPivotFactor = 2.8
+
+    // MARK: Kennlinie
+
+    /// Bildet einen Reglerwert gemäß `curve` auf den visuellen Spuranteil `0...1` ab.
+    static func fraction(for value: Double,
+                         range: ClosedRange<Double>,
+                         neutral: Double = 0,
+                         curve: SliderResponseCurve = .linear) -> Double {
+        let low = range.lowerBound
+        let high = range.upperBound
+        let span = high - low
+        guard span > 0 else { return 0 }
+        let clamped = min(max(value, low), high)
+
+        switch curve {
+        case .linear:
+            return (clamped - low) / span
+
+        case .softCenter(let exponent):
+            let exp = max(exponent, 0.01)
+            let mid = min(max(neutral, low), high)
+            let midFrac = (mid - low) / span
+            if clamped < mid, mid > low {
+                let norm = (mid - clamped) / (mid - low)
+                return midFrac * (1 - pow(norm, 1 / exp))
+            } else if clamped > mid, high > mid {
+                let norm = (clamped - mid) / (high - mid)
+                return midFrac + (1 - midFrac) * pow(norm, 1 / exp)
+            }
+            return midFrac
+
+        case .miredTemperature:
+            guard low > 0, high > low else {
+                return (clamped - low) / span
+            }
+            let mLow = 1_000_000.0 / low
+            let mHigh = 1_000_000.0 / high
+            let mSpan = mLow - mHigh
+            guard mSpan > 0 else { return (clamped - low) / span }
+            let u = min(max((mLow - 1_000_000.0 / clamped) / mSpan, 0), 1)
+            let k = miredPivotFactor
+            return u / (k * (1 - u) + u)
+        }
+    }
+
+    /// Wandelt einen visuellen Spuranteil (`0...1`) gemäß `curve` zurück in einen Reglerwert.
+    static func value(atFraction fraction: Double,
+                      range: ClosedRange<Double>,
+                      neutral: Double = 0,
+                      curve: SliderResponseCurve = .linear) -> Double {
+        let low = range.lowerBound
+        let high = range.upperBound
+        let span = high - low
+        guard span > 0 else { return low }
+        let f = min(max(fraction, 0), 1)
+
+        switch curve {
+        case .linear:
+            return low + f * span
+
+        case .softCenter(let exponent):
+            let exp = max(exponent, 0.01)
+            let mid = min(max(neutral, low), high)
+            let midFrac = (mid - low) / span
+            if f < midFrac, midFrac > 0 {
+                let norm = (midFrac - f) / midFrac
+                return mid - pow(norm, exp) * (mid - low)
+            } else if f > midFrac, midFrac < 1 {
+                let norm = (f - midFrac) / (1 - midFrac)
+                return mid + pow(norm, exp) * (high - mid)
+            }
+            return mid
+
+        case .miredTemperature:
+            guard low > 0, high > low else {
+                return low + f * span
+            }
+            let mLow = 1_000_000.0 / low
+            let mHigh = 1_000_000.0 / high
+            let mSpan = mLow - mHigh
+            guard mSpan > 0 else { return low + f * span }
+            let k = miredPivotFactor
+            let u = (k * f) / (1 + (k - 1) * f)
+            let mired = mLow - u * mSpan
+            guard mired > 0 else { return high }
+            return min(max(1_000_000.0 / mired, low), high)
+        }
+    }
 
     // MARK: Ziehgeschwindigkeit
 
@@ -28,13 +128,15 @@ enum SliderValueMath {
                       dragTranslation: Double,
                       trackWidth: Double,
                       range: ClosedRange<Double>,
-                      speed: Double) -> Double {
+                      speed: Double,
+                      neutral: Double = 0,
+                      curve: SliderResponseCurve = .linear) -> Double {
         // Eine Schiene ohne Breite gaebe es nur im ersten Layout-Durchgang; die
         // Division daraus waere `nan` und damit eine Reglerstellung ohne Rueckweg.
         guard trackWidth > 0 else { return startValue }
-        let span = range.upperBound - range.lowerBound
-        let neu = startValue + (dragTranslation / trackWidth) * span * speed
-        return min(max(neu, range.lowerBound), range.upperBound)
+        let startFrac = fraction(for: startValue, range: range, neutral: neutral, curve: curve)
+        let zielFrac = startFrac + (dragTranslation / trackWidth) * speed
+        return value(atFraction: zielFrac, range: range, neutral: neutral, curve: curve)
     }
 
     // MARK: Rastung
@@ -49,11 +151,14 @@ enum SliderValueMath {
                         range: ClosedRange<Double>,
                         trackWidth: Double,
                         thresholdPoints: Double,
-                        enabled: Bool) -> Double {
+                        enabled: Bool,
+                        curve: SliderResponseCurve = .linear) -> Double {
         guard enabled, trackWidth > 0 else { return value }
         let span = range.upperBound - range.lowerBound
         guard span > 0 else { return value }
-        let abstandInPunkten = abs(value - neutral) / span * trackWidth
+        let fVal = fraction(for: value, range: range, neutral: neutral, curve: curve)
+        let fNeutral = fraction(for: neutral, range: range, neutral: neutral, curve: curve)
+        let abstandInPunkten = abs(fVal - fNeutral) * trackWidth
         return abstandInPunkten <= thresholdPoints ? neutral : value
     }
 

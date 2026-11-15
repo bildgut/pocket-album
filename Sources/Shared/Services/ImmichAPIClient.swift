@@ -1,7 +1,23 @@
 import Foundation
 
 final class ImmichAPIClient {
-    let baseURL: URL
+    private let routeLock = NSLock()
+    private var _baseURL: URL
+    private var _assetBasePath: URL
+    private var _canonicalBaseURL: URL
+
+    var baseURL: URL {
+        routeLock.lock()
+        defer { routeLock.unlock() }
+        return _baseURL
+    }
+
+    var canonicalBaseURL: URL {
+        routeLock.lock()
+        defer { routeLock.unlock() }
+        return _canonicalBaseURL
+    }
+
     let apiKey: String
     let sessionConfiguration: URLSessionConfiguration
     private let session: URLSession
@@ -21,16 +37,18 @@ final class ImmichAPIClient {
     ///   des Clients. Injizierbar für Tests (z. B. mit `protocolClasses`).
     init(
         baseURL: URL,
+        canonicalBaseURL: URL? = nil,
         apiKey: String,
         sessionConfiguration: URLSessionConfiguration = .default,
         editedAssets: EditedAssetsStore = .shared,
         anfrageFrist: TimeInterval = 30
     ) {
-        self.baseURL = baseURL
+        self._baseURL = baseURL
+        self._canonicalBaseURL = canonicalBaseURL ?? baseURL
         self.apiKey = apiKey
         self.sessionConfiguration = sessionConfiguration
         self.editedAssets = editedAssets
-        self.assetBasePath = baseURL.appending(path: "api/assets")
+        self._assetBasePath = baseURL.appending(path: "api/assets")
 
         // URLSession kopiert die Configuration beim Erzeugen — die Session ohne
         // Header zuerst anlegen, bevor die Kopie für die Auth-Session mutiert wird.
@@ -70,7 +88,24 @@ final class ImmichAPIClient {
     static let kurzeFrist: TimeInterval = 6
 
     // Cached base paths for URL construction (avoids per-call URLComponents parsing)
-    private let assetBasePath: URL
+    private var assetBasePath: URL {
+        routeLock.lock()
+        defer { routeLock.unlock() }
+        return _assetBasePath
+    }
+
+    /// Schaltet die aktive Server-Basis-URL im laufenden Betrieb um (z. B. zwischen
+    /// Heimnetz-URL und externer URL), ohne dass bestehende Referenzen auf den
+    /// `ImmichAPIClient` ungültig werden.
+    func updateBaseURL(_ newURL: URL, canonicalURL: URL? = nil) {
+        routeLock.lock()
+        _baseURL = newURL
+        _assetBasePath = newURL.appending(path: "api/assets")
+        if let canonicalURL {
+            _canonicalBaseURL = canonicalURL
+        }
+        routeLock.unlock()
+    }
 
     /// Entscheidet je Asset, ob die Bild-URLs die bearbeitete Fassung anfordern.
     /// Siehe ``EditedAssetsStore`` — ohne `edited=true` liefert Immich dauerhaft das
@@ -678,7 +713,7 @@ final class ImmichAPIClient {
     /// wäre nach einem Zurücksetzen der Bearbeitung wieder sichtbar.
     func cacheKeyURLs(assetId: String) -> [URL] {
         let original = originalURL(assetId: assetId)
-        return [
+        var urls: [URL] = [
             thumbnailURL(assetId: assetId, size: .thumbnail, edited: false),
             thumbnailURL(assetId: assetId, size: .thumbnail, edited: true),
             thumbnailURL(assetId: assetId, size: .preview, edited: false),
@@ -686,6 +721,53 @@ final class ImmichAPIClient {
             original,
             original.appending(queryItems: [URLQueryItem(name: "edited", value: "true")]),
         ]
+        let canonical = canonicalBaseURL
+        let current = baseURL
+        if canonical != current {
+            for u in urls {
+                if let mapped = Self.rewriteOrigin(of: u, from: current, to: canonical), mapped != u {
+                    urls.append(mapped)
+                }
+            }
+        }
+        return urls
+    }
+
+    /// Ersetzt Schema, Host, Port und Basis-Pfad einer Asset-URL von `sourceBase` auf
+    /// `targetBase`, damit Nuke-Cache-Schlüssel über LAN- und Remote-URLs hinweg identisch
+    /// bleiben (auch bei Subpfad-Reverse-Proxys).
+    static func rewriteOrigin(of url: URL, from sourceBase: URL, to targetBase: URL) -> URL? {
+        guard sourceBase != targetBase,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let sourceComponents = URLComponents(url: sourceBase, resolvingAgainstBaseURL: false),
+              let targetComponents = URLComponents(url: targetBase, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == sourceComponents.scheme?.lowercased(),
+              components.host?.lowercased() == sourceComponents.host?.lowercased(),
+              components.port == sourceComponents.port else {
+            return nil
+        }
+
+        let sourcePath = sourceComponents.path.hasSuffix("/") && sourceComponents.path.count > 1
+            ? String(sourceComponents.path.dropLast())
+            : sourceComponents.path
+        let targetPath = targetComponents.path.hasSuffix("/") && targetComponents.path.count > 1
+            ? String(targetComponents.path.dropLast())
+            : targetComponents.path
+
+        if !sourcePath.isEmpty && sourcePath != "/" {
+            guard components.path == sourcePath || components.path.hasPrefix(sourcePath + "/") else {
+                return nil
+            }
+            let suffix = String(components.path.dropFirst(sourcePath.count))
+            components.path = (targetPath == "/" ? "" : targetPath) + suffix
+        } else if !targetPath.isEmpty && targetPath != "/" {
+            components.path = targetPath + (components.path.hasPrefix("/") ? components.path : "/\(components.path)")
+        }
+
+        components.scheme = targetComponents.scheme
+        components.host = targetComponents.host
+        components.port = targetComponents.port
+        return components.url
     }
 
     func playbackURL(assetId: String) -> URL {
@@ -786,6 +868,102 @@ final class ImmichAPIClient {
         try? FileManager.default.removeItem(at: destinationURL)
         try FileManager.default.moveItem(at: tempURL, to: destinationURL)
         return http?.value(forHTTPHeaderField: "Content-Type")
+    }
+
+    // MARK: - Archive Download (/download/info & /download/archive)
+
+    struct DownloadArchiveInfo: Codable, Sendable, Equatable {
+        let assetIds: [String]
+        let size: Int64
+    }
+
+    struct DownloadInfoResponse: Codable, Sendable, Equatable {
+        let totalSize: Int64
+        let archives: [DownloadArchiveInfo]
+    }
+
+    private struct DownloadInfoRequest: Encodable {
+        var assetIds: [String]?
+        var albumId: String?
+    }
+
+    private struct DownloadArchiveRequest: Encodable {
+        let assetIds: [String]
+    }
+
+    /// Fragt beim Server an, in welche Teilarchive ein ZIP-Download für die angegebenen
+    /// `assetIds` oder das `albumId` aufgeteilt wird (`POST /api/download/info`).
+    func getDownloadInfo(assetIds: [String]? = nil, albumId: String? = nil) async throws -> DownloadInfoResponse {
+        let url = baseURL.appending(path: "api/download/info")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.httpBody = try jsonEncoder.encode(DownloadInfoRequest(assetIds: assetIds, albumId: albumId))
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...201).contains(http.statusCode) else {
+            throw APIError.httpError((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        return try jsonDecoder.decode(DownloadInfoResponse.self, from: data)
+    }
+
+    /// Lädt ein einzelnes ZIP-Teilarchiv direkt in `destinationURL` (`POST /api/download/archive`),
+    /// gestreamt auf die Platte ohne RAM-Spike.
+    func downloadArchiveChunkToFile(assetIds: [String], destinationURL: URL) async throws {
+        let url = baseURL.appending(path: "api/download/archive")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.httpBody = try jsonEncoder.encode(DownloadArchiveRequest(assetIds: assetIds))
+
+        let (tempURL, response) = try await downloadSession.download(for: request)
+        guard let http = response as? HTTPURLResponse, (200...201).contains(http.statusCode) else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw APIError.httpError((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        try? FileManager.default.removeItem(at: destinationURL)
+        try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+    }
+
+    /// Berechnet die Zieldateinamen für 1 bis N Teilarchive (`Name.zip` bzw. `Name-1.zip`, `Name-2.zip`).
+    nonisolated static func archiveDestinationURLs(baseURL: URL, count: Int) -> [URL] {
+        guard count > 1 else { return [baseURL] }
+        let directory = baseURL.deletingLastPathComponent()
+        let ext = baseURL.pathExtension.isEmpty ? "zip" : baseURL.pathExtension
+        let stem = baseURL.deletingPathExtension().lastPathComponent
+        return (1...count).map { index in
+            directory.appendingPathComponent("\(stem)-\(index).\(ext)")
+        }
+    }
+
+    /// Lädt eine Auswahl von Assets oder ein ganzes Album als ZIP-Archiv(e) herunter.
+    /// Liefert die geschriebenen Datei-URLs zurück.
+    @discardableResult
+    func downloadArchive(
+        assetIds: [String]? = nil,
+        albumId: String? = nil,
+        baseDestinationURL: URL
+    ) async throws -> [URL] {
+        let info = try await getDownloadInfo(assetIds: assetIds, albumId: albumId)
+        let chunks: [DownloadArchiveInfo]
+        if !info.archives.isEmpty {
+            chunks = info.archives.filter { !$0.assetIds.isEmpty }
+        } else if let assetIds, !assetIds.isEmpty {
+            chunks = [DownloadArchiveInfo(assetIds: assetIds, size: 0)]
+        } else {
+            chunks = []
+        }
+        guard !chunks.isEmpty else { return [] }
+
+        let destinations = Self.archiveDestinationURLs(baseURL: baseDestinationURL, count: chunks.count)
+        var written: [URL] = []
+        for (chunk, dest) in zip(chunks, destinations) {
+            try await downloadArchiveChunkToFile(assetIds: chunk.assetIds, destinationURL: dest)
+            written.append(dest)
+        }
+        return written
     }
 
     // MARK: - Upload Checks
@@ -1533,6 +1711,112 @@ final class ImmichAPIClient {
 
     // MARK: - Stacks
 
+    /// Stapel-Metadaten aus den monatlichen Timeline-Buckets (versteckte Stack-Kinder und gestapelte Titelbilder).
+    struct TimelineStapelMonatsInfo: Sendable {
+        let versteckteKindIds: Set<String>
+        let gestapelteTitelbildIds: Set<String>
+    }
+
+    /// Ermittelt anhand der Monats-Buckets, welche Asset-IDs untergeordnete Stack-Kinder sind
+    /// und welche Titelbilder zu einem Stapel gehören.
+    func ladeStapelInfoFuerMonate(_ monate: [String]) async -> TimelineStapelMonatsInfo {
+        var alleMitStack = Set<String>()
+        var alleOhneStack = Set<String>()
+        var gestapelteTitelbildIds = Set<String>()
+
+        for monat in monate {
+            guard let mitStack = await ladeTimelineBucketStapelEintrag(monat: monat, withStacked: true),
+                  let ohneStack = await ladeTimelineBucketStapelEintrag(monat: monat, withStacked: false)
+            else { continue }
+
+            alleMitStack.formUnion(mitStack.ids)
+            alleOhneStack.formUnion(ohneStack.ids)
+            gestapelteTitelbildIds.formUnion(mitStack.gestapelteIds)
+        }
+
+        return TimelineStapelMonatsInfo(
+            versteckteKindIds: alleOhneStack.subtracting(alleMitStack),
+            gestapelteTitelbildIds: gestapelteTitelbildIds
+        )
+    }
+
+    private func ladeTimelineBucketStapelEintrag(
+        monat: String,
+        withStacked: Bool
+    ) async -> (ids: [String], gestapelteIds: Set<String>)? {
+        guard var components = URLComponents(
+            url: baseURL.appending(path: "api/timeline/bucket"),
+            resolvingAgainstBaseURL: false
+        ) else { return nil }
+
+        components.queryItems = [
+            URLQueryItem(name: "size", value: "MONTH"),
+            URLQueryItem(name: "timeBucket", value: monat),
+            URLQueryItem(name: "visibility", value: "timeline"),
+            URLQueryItem(name: "isTrashed", value: "false"),
+            URLQueryItem(name: "withStacked", value: withStacked ? "true" : "false")
+        ]
+        guard let url = components.url else { return nil }
+
+        var request = URLRequest(url: url)
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ids = dict["id"] as? [String]
+            else { return nil }
+
+            var gestapelteIds = Set<String>()
+            if withStacked, let stacks = dict["stack"] as? [Any] {
+                for (index, eintrag) in stacks.enumerated() where index < ids.count {
+                    if eintrag is [Any] {
+                        gestapelteIds.insert(ids[index])
+                    }
+                }
+            }
+            return (ids, gestapelteIds)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Liefert alle Asset-IDs eines Stapels anhand seines Titelbildes (`primaryAssetId`)
+    /// mit Fallback auf `[primaryAssetId]`, falls die Abfrage fehlschlägt oder leer bleibt.
+    func getStackAssetIds(primaryAssetId: String) async -> [String] {
+        guard var components = URLComponents(
+            url: baseURL.appending(path: "api/stacks"),
+            resolvingAgainstBaseURL: false
+        ) else { return [primaryAssetId] }
+
+        components.queryItems = [URLQueryItem(name: "primaryAssetId", value: primaryAssetId)]
+        guard let url = components.url else { return [primaryAssetId] }
+
+        var request = URLRequest(url: url)
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                return [primaryAssetId]
+            }
+            let stacks = try jsonDecoder.decode([Stack].self, from: data)
+            let ids = stacks.flatMap { $0.assets.map(\.id) }
+            guard !ids.isEmpty else { return [primaryAssetId] }
+
+            var gesehen = Set<String>()
+            var ergebnis: [String] = []
+            for id in [primaryAssetId] + ids where gesehen.insert(id).inserted {
+                ergebnis.append(id)
+            }
+            return ergebnis
+        } catch {
+            return [primaryAssetId]
+        }
+    }
+
     /// Retrieve all stacks (series) from Immich
     func getStacks() async throws -> [Stack] {
         let url = baseURL.appending(path: "api/stacks")
@@ -1601,6 +1885,63 @@ final class ImmichAPIClient {
         let (_, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard (200...204).contains(statusCode) else {
+            throw APIError.httpError(statusCode)
+        }
+    }
+
+    // MARK: - Asset-Metadaten
+
+    /// Liest einen Eintrag der freien Schlüssel/Wert-Ablage eines Assets.
+    /// GET /api/assets/{id}/metadata → `[{key, value, updatedAt}]`
+    ///
+    /// Die Einträge kommen **nicht** mit `GET /api/assets/{id}` — immer hier lesen.
+    /// - Returns: der `value` als JSON-Daten, `nil` ohne Eintrag dieses Schlüssels.
+    func leseMetadatum(assetId: String, schluessel: String) async throws -> Data? {
+        let url = baseURL.appending(path: "api/assets/\(assetId)/metadata")
+        var request = URLRequest(url: url)
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+
+        let (data, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard statusCode == 200 else { throw APIError.httpError(statusCode) }
+
+        let eintraege = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+        guard let wert = eintraege.first(where: { $0["key"] as? String == schluessel })?["value"] else {
+            return nil
+        }
+        return try JSONSerialization.data(withJSONObject: wert)
+    }
+
+    /// Schreibt einen Eintrag. PUT /api/assets/{id}/metadata `{"items":[{key, value}]}`
+    ///
+    /// `wert` muss ein JSON-**Objekt** sein — der Server lehnt einen String mit 400 ab
+    /// („expected record“). Deshalb wird er eingebettet, nicht als Text verschickt.
+    func schreibeMetadatum(assetId: String, schluessel: String, wert: Data) async throws {
+        let url = baseURL.appending(path: "api/assets/\(assetId)/metadata")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        let objekt = try JSONSerialization.jsonObject(with: wert)
+        let body: [String: Any] = ["items": [["key": schluessel, "value": objekt]]]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (_, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200...204).contains(statusCode) else { throw APIError.httpError(statusCode) }
+    }
+
+    /// Entfernt einen Eintrag. DELETE /api/assets/{id}/metadata/{key}
+    /// Ein fehlender Eintrag (404) ist das gewünschte Ergebnis, kein Fehler.
+    func loescheMetadatum(assetId: String, schluessel: String) async throws {
+        let url = baseURL.appending(path: "api/assets/\(assetId)/metadata/\(schluessel)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+
+        let (_, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200...204).contains(statusCode) || statusCode == 404 else {
             throw APIError.httpError(statusCode)
         }
     }

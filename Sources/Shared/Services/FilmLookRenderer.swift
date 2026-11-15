@@ -50,6 +50,7 @@ enum FilmLookRenderer {
         if look.lichter != 0 || look.schatten != 0 || look.weiss != 0 || look.schwarz != 0
             || look.klarheit != 0 || look.struktur != 0 || look.dunst != 0 {
             var basis = RawDevelopParams()
+            basis.farbModell = 1
             basis.highlights = look.lichter; basis.shadows = look.schatten
             basis.whites = look.weiss; basis.blacks = look.schwarz
             basis.clarity = look.klarheit; basis.texture = look.struktur; basis.dehaze = look.dunst
@@ -146,8 +147,8 @@ enum FilmLookRenderer {
 
     /// Zwei per Soft-Light getönte Kopien, über eine Luminanzmaske (und ihre Inverse)
     /// gegen das Bild geblendet. `balance` verschiebt die Maske per Gamma: negativ
-    /// zählt mehr Tonwerte zu den Schatten, positiv mehr zu den Lichtern.
-    private static func applySplitToning(
+    /// zählt mehr Tonwerte zu den Schatten, positiv mehr wie Lichter.
+    static func applySplitToning(
         _ img: CIImage, toning: SplitToning, extent: CGRect
     ) -> CIImage {
         // Luminanz (Rec. 709) in alle drei Kanäle.

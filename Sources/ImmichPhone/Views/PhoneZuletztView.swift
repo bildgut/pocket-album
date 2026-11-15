@@ -55,15 +55,22 @@ struct PhoneZuletztView: View {
 }
 
 /// Das Raster selbst — auch der Reiter „Fotos“ zeigt es ohne Netz, statt nur
-/// „Offline“ zu melden (Gerätebefund 14.10.2026).
+/// „Offline“ zu melden (Gerätebefund 14.10.2026). Ohne Netz zeigen auch die
+/// Favoriten damit ihren gespeicherten Bestand (Gerätebefund 26.10.2026).
 struct PhoneZuletztInhalt: View {
     /// Ohne Modell (Fotos-Reiter) entfällt nur das Nachführen der Abzeichen.
     var offline: PhoneOfflineModel?
+    /// Welcher Vermerk gezeigt wird; Vorgabe „Letzte Tage“.
+    var kind: OfflinePinKind = .zuletzt
+    var targetId: String = ZuletztOffline.targetId
+    var leerText: String = String(localized: "No photos taken in this period yet.")
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(ConnectionManager.self) private var connection
     @State private var eintraege: [PhoneAlbumGridEintrag] = []
     @State private var geladen = false
     @State private var praesentierterStartindex: PhoneAssetStartIndex?
+    @State private var zeigtSwipe = false
 
     private let columns = PhoneRasterSpalten.fotos
 
@@ -86,8 +93,8 @@ struct PhoneZuletztInhalt: View {
             if geladen && eintraege.isEmpty {
                 ContentUnavailableView(
                     "No Photos",
-                    systemImage: OfflinePinKind.zuletzt.iconName,
-                    description: Text(String(localized: "No photos taken in this period yet."))
+                    systemImage: kind.iconName,
+                    description: Text(leerText)
                 )
             }
         }
@@ -110,11 +117,39 @@ struct PhoneZuletztInhalt: View {
                 }
             )
         }
+        .toolbar {
+            if kind == .zuletzt,
+               connection.apiClient != nil,
+               PhoneSwipeModus.istEinstiegSichtbar(rechte: connection.keyRechte, istOffline: connection.state.isOffline) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        zeigtSwipe = true
+                    } label: {
+                        Label(PhoneSwipeTexts.einstieg, systemImage: "rectangle.stack")
+                    }
+                }
+            }
+        }
+        .background {
+            if kind == .zuletzt, let apiClient = connection.apiClient {
+                Color.clear
+                    .fullScreenCover(isPresented: $zeigtSwipe, onDismiss: { lade() }) {
+                        PhoneSwipeView(
+                            apiClient: apiClient,
+                            rechte: connection.keyRechte,
+                            onGeloescht: { ids in
+                                let geloescht = Set(ids)
+                                eintraege.removeAll { geloescht.contains($0.id) }
+                            }
+                        )
+                    }
+            }
+        }
     }
 
     private func lade() {
         defer { geladen = true }
-        guard let pin = OfflinePinStore.pin(kind: .zuletzt, targetId: ZuletztOffline.targetId, in: modelContext) else {
+        guard let pin = OfflinePinStore.pin(kind: kind, targetId: targetId, in: modelContext) else {
             eintraege = []
             return
         }

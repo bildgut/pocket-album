@@ -19,7 +19,8 @@ extension ModelContext {
     func upsertApplePhotosMapping(
         localIdentifier: String,
         immichAssetId: String,
-        modificationDate: Date?
+        modificationDate: Date?,
+        saveImmediately: Bool = true
     ) {
         let id = localIdentifier
         let predicate = #Predicate<ApplePhotosAssetMapping> { $0.localIdentifier == id }
@@ -36,6 +37,8 @@ extension ModelContext {
                 )
             )
         }
-        try? save()
+        if saveImmediately {
+            try? save()
+        }
     }
 }

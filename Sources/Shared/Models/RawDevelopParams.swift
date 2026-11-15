@@ -43,22 +43,34 @@ struct RawDevelopParams: Codable, Hashable, Sendable {
     var blacks: Double = 0        // −100…+100
     var contrast: Double = 1      // 0.5…2
     var saturation: Double = 1    // 0…2
-    var vibrance: Double = 0      // -1…+1
+    var vibrance: Double = 0 { didSet { normalisiereFarbModell() } }     // -1…+1
 
     // Stufe 2: Effekte
     var clarity: Double = 0       // −100…+100
     var texture: Double = 0       // −100…+100
-    var dehaze: Double = 0        // −100…+100
+    var dehaze: Double = 0 { didSet { normalisiereFarbModell() } }       // −100…+100
     var vignette: Double = 0      // −100…+100 (negativ = aufhellen)
     var grain: Double = 0         // 0…100
 
-    // Stufe 2: Farbmischer
+    // Stufe 2: Farbmischer, Gradationskurve & Farbtonung
     var hsl: HSLMixerParams = .identity
+    var toneCurve: ToneCurve = .identity
+    var splitToning: SplitToning = .identity
 
     // Stufe 3: Film-Look — als Katalog-ID, nicht eingebettet: kleines JSON, und ein
     // später entfernter Look ergibt „kein Look" statt eines Decoding-Fehlers.
     var lookID: String?
     var lookStaerke: Double = 1   // 0…1
+
+    /// Welche Rechnung die Lebendigkeit nutzt, siehe `FarbModell`. Neue Werte rechnen mit dem
+    /// aktuellen Modell; ein JSON ohne den Schlüssel stammt aus der `CIVibrance`-Zeit (0).
+    /// Tut die Lebendigkeit nichts (Regler und Dunst auf 0), gibt es nichts zu bewahren —
+    /// dann gilt das aktuelle Modell, sonst wäre ein unberührtes altes Foto nie `== .identity`.
+    var farbModell: Int = FarbModell.aktuell
+
+    private mutating func normalisiereFarbModell() {
+        if vibrance == 0 && dehaze == 0 { farbModell = FarbModell.aktuell }
+    }
 
     static let identity = RawDevelopParams()
 
@@ -87,6 +99,8 @@ struct RawDevelopParams: Codable, Hashable, Sendable {
         vignette: Double = 0,
         grain: Double = 0,
         hsl: HSLMixerParams = .identity,
+        toneCurve: ToneCurve = .identity,
+        splitToning: SplitToning = .identity,
         lookID: String? = nil,
         lookStaerke: Double = 1
     ) {
@@ -110,6 +124,8 @@ struct RawDevelopParams: Codable, Hashable, Sendable {
         self.vignette = vignette
         self.grain = grain
         self.hsl = hsl
+        self.toneCurve = toneCurve
+        self.splitToning = splitToning
         self.lookID = lookID
         self.lookStaerke = lookStaerke
     }
@@ -120,8 +136,8 @@ struct RawDevelopParams: Codable, Hashable, Sendable {
         case version
         case temperature, tint, exposure, luminanceNR, colorNR, sharpness, lensCorrection
         case highlights, shadows, whites, blacks, contrast, saturation, vibrance
-        case clarity, texture, dehaze, vignette, grain, hsl
-        case lookID, lookStaerke
+        case clarity, texture, dehaze, vignette, grain, hsl, toneCurve, splitToning
+        case lookID, lookStaerke, farbModell
     }
 
     /// Nur beim Lesen von v1-JSON relevant; v2 schreibt diese Keys nicht mehr.
@@ -174,8 +190,46 @@ struct RawDevelopParams: Codable, Hashable, Sendable {
         vignette = try container.decodeIfPresent(Double.self, forKey: .vignette) ?? 0
         grain    = try container.decodeIfPresent(Double.self, forKey: .grain) ?? 0
         hsl      = try container.decodeIfPresent(HSLMixerParams.self, forKey: .hsl) ?? .identity
+        toneCurve = try container.decodeIfPresent(ToneCurve.self, forKey: .toneCurve) ?? .identity
+        splitToning = try container.decodeIfPresent(SplitToning.self, forKey: .splitToning) ?? .identity
         lookID   = try container.decodeIfPresent(String.self, forKey: .lookID)
         lookStaerke = try container.decodeIfPresent(Double.self, forKey: .lookStaerke) ?? 1
+        farbModell = try container.decodeIfPresent(Int.self, forKey: .farbModell) ?? 0
+        normalisiereFarbModell()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encodeIfPresent(temperature, forKey: .temperature)
+        try container.encodeIfPresent(tint, forKey: .tint)
+        try container.encode(exposure, forKey: .exposure)
+        try container.encodeIfPresent(luminanceNR, forKey: .luminanceNR)
+        try container.encodeIfPresent(colorNR, forKey: .colorNR)
+        try container.encodeIfPresent(sharpness, forKey: .sharpness)
+        try container.encode(lensCorrection, forKey: .lensCorrection)
+        try container.encode(highlights, forKey: .highlights)
+        try container.encode(shadows, forKey: .shadows)
+        try container.encode(whites, forKey: .whites)
+        try container.encode(blacks, forKey: .blacks)
+        try container.encode(contrast, forKey: .contrast)
+        try container.encode(saturation, forKey: .saturation)
+        try container.encode(vibrance, forKey: .vibrance)
+        try container.encode(clarity, forKey: .clarity)
+        try container.encode(texture, forKey: .texture)
+        try container.encode(dehaze, forKey: .dehaze)
+        try container.encode(vignette, forKey: .vignette)
+        try container.encode(grain, forKey: .grain)
+        try container.encode(hsl, forKey: .hsl)
+        if !toneCurve.isIdentity {
+            try container.encode(toneCurve, forKey: .toneCurve)
+        }
+        if splitToning != .identity {
+            try container.encode(splitToning, forKey: .splitToning)
+        }
+        try container.encodeIfPresent(lookID, forKey: .lookID)
+        try container.encode(lookStaerke, forKey: .lookStaerke)
+        try container.encode(farbModell, forKey: .farbModell)
     }
 
     // MARK: - JSON-Helfer

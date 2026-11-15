@@ -44,6 +44,13 @@ actor LocalFileCacheManager {
     // MARK: - Download (contextfrei)
 
     /// Prüft, ob für das Asset und die gewünschte Fassung bereits eine vollständige Datei im Cache liegt.
+    /// Nur für Foto-Vorschauen: Ein fehlendes kleines Video durch das Original zu
+    /// ersetzen, lüde womöglich Gigabytes, die der Nutzer mit „Klein“ abgewählt hat.
+    nonisolated static func originalStattVorschau(fassung: OfflineFassung, fehler: Error) -> Bool {
+        guard fassung == .vorschau, case APIError.httpError(404) = fehler else { return false }
+        return true
+    }
+
     nonisolated static func existingCachedPath(
         assetId: String,
         monthKey: String,
@@ -57,7 +64,10 @@ actor LocalFileCacheManager {
         }
         for file in files {
             let name = file.lastPathComponent
-            guard OfflineFassung.gehoert(dateiname: name, zu: assetId) else { continue }
+            // Ein `.tmp` ist ein laufender oder abgebrochener Download, nie ein fertiges
+            // Original — `OfflineFassung.aus` hielte `<id>.tmp` sonst dafür.
+            guard file.pathExtension != "tmp",
+                  OfflineFassung.gehoert(dateiname: name, zu: assetId) else { continue }
             let vorhandeneFassung = OfflineFassung.aus(pfad: name)
             if vorhandeneFassung == fassung || (fassung != .original && vorhandeneFassung == .original) {
                 if let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 0 {
@@ -148,6 +158,14 @@ actor LocalFileCacheManager {
             contentType = try await apiClient.downloadToFile(url: quelle, destinationURL: tempDest, metrik: metrik)
         } catch {
             try? FileManager.default.removeItem(at: tempDest)
+            // Ohne Vorschau am Server (404, etwa wenn er sie beim Import nicht erzeugen
+            // konnte) das Original nehmen — es erfüllt jede kleinere Fassung
+            // (``existingCachedPath``). Vier Favoriten fehlten sonst bei jedem Lauf
+            // erneut (Gerätebefund 26.10.2026).
+            if Self.originalStattVorschau(fassung: fassung, fehler: error) {
+                AppLogger.cache.info("Vorschau von \(assetId, privacy: .public) fehlt am Server (404) — lade Original")
+                return try await downloadOriginalToCache(assetId: assetId, monthKey: monthKey, apiClient: apiClient)
+            }
             throw error
         }
 
@@ -475,15 +493,22 @@ actor LocalFileCacheManager {
 
     /// Liefert alle Asset-IDs zurück, deren Datei aktuell im lokalen Cache vorliegt.
     nonisolated static func allCachedAssetIds(container: ModelContainer) -> Set<String> {
+        Set(allCachedAssetFiles(container: container).keys)
+    }
+
+    /// Asset-ID → lokale Originaldatei, nur für Dateien, die wirklich auf der Platte
+    /// liegen. Das Raster braucht die Datei, nicht nur die ID: Offline rendert es
+    /// daraus die Kachel, wenn Nukes Disk-Cache kein Thumbnail hat.
+    nonisolated static func allCachedAssetFiles(container: ModelContainer) -> [String: URL] {
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<CachedAsset>(
             predicate: #Predicate<CachedAsset> { $0.localFilePath != nil }
         )
-        guard let list = try? context.fetch(descriptor) else { return [] }
-        var result = Set<String>()
+        guard let list = try? context.fetch(descriptor) else { return [:] }
+        var result: [String: URL] = [:]
         for asset in list {
-            if let path = asset.localFilePath, localFileURL(forPath: path) != nil {
-                result.insert(asset.assetId)
+            if let url = localFileURL(forPath: asset.localFilePath) {
+                result[asset.assetId] = url
             }
         }
         return result

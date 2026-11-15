@@ -6,12 +6,17 @@ import Foundation
 /// Farbtöne in Grad (0…360), Stärken 0…100. `balance` verschiebt die Grenze zwischen
 /// Schatten und Lichtern: negativ färbt mehr Tonwerte wie Schatten, positiv mehr wie
 /// Lichter.
-struct SplitToning: Codable, Equatable, Sendable {
+struct SplitToning: Codable, Equatable, Hashable, Sendable {
     var schattenFarbton: Double
     var schattenStaerke: Double
     var lichterFarbton: Double
     var lichterStaerke: Double
     var balance: Double
+
+    static let identity = SplitToning(
+        schattenFarbton: 220, schattenStaerke: 0,
+        lichterFarbton: 40, lichterStaerke: 0, balance: 0
+    )
 
     var isIdentity: Bool { schattenStaerke == 0 && lichterStaerke == 0 }
 

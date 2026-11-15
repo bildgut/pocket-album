@@ -73,7 +73,7 @@ enum EditedAssetUploadService {
     /// Alben unangetastet, also wäre ein Abbruch der teurere Fehler — er würfe eine
     /// fertig hochgeladene Bearbeitung weg, um eine Zugehörigkeit zu retten, die noch
     /// da ist. Deshalb hier: melden, nicht scheitern.
-    private static func uebertrageMetadaten(
+    static func uebertrageMetadaten(
         von originalId: String,
         auf neueId: String,
         apiClient: ImmichAPIClient

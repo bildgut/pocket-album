@@ -55,8 +55,20 @@ final class PrefetchController {
         prefetcher?.startPrefetching(with: requests)
     }
 
+    /// Prefetch specific asset IDs requested by `NSCollectionViewPrefetching`.
+    func prefetch(assetIds: [String]) {
+        guard !assetIds.isEmpty else { return }
+        let requests = assetIds.map {
+            var req = ImageRequest(url: apiClient.thumbnailURL(assetId: $0))
+            req.priority = .low  // Visible cells use default .normal and win
+            return req
+        }
+        prefetcher?.startPrefetching(with: requests)
+    }
+
     /// Cancel prefetching for assets that are no longer near the viewport
     func cancelPrefetch(assetIds: [String]) {
+        guard !assetIds.isEmpty else { return }
         let urls = assetIds.map { apiClient.thumbnailURL(assetId: $0) }
         prefetcher?.stopPrefetching(with: urls)
     }

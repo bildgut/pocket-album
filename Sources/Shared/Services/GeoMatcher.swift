@@ -47,12 +47,20 @@ enum GeoMatcher {
                                          crowding: crowding)
         let clusterResult = clusters(sorted: working, parameters: parameters,
                                      crowding: crowding)
+        let clusteredOrphanIds = Set(clusterResult.kept.flatMap(\.orphanIds))
+        let orphanSessionResult = orphanSessions(
+            sorted: working,
+            clusteredOrphanIds: clusteredOrphanIds,
+            parameters: parameters,
+            crowding: crowding
+        )
 
         return GeoScanResult(
             pairs: pairResult.kept.sorted(by: suggestionOrder),
             suppressedPairs: pairResult.suppressed.sorted(by: suggestionOrder),
             clusters: clusterResult.kept.sorted(by: clusterOrder),
             suppressedClusters: clusterResult.suppressed.sorted(by: clusterOrder),
+            orphanSessions: orphanSessionResult,
             unmatchedOrphans: unmatchedOrphans(
                 sorted: working,
                 matchedIds: Set(pairResult.kept.map(\.orphanId)),
@@ -168,26 +176,86 @@ enum GeoMatcher {
     /// Einträge, die man nie gesehen hat.
     static func filter(clusters: [GeoCluster],
                        atOrAbove threshold: GeoConfidenceThreshold,
+                       dateFilter: GeoDateFilter = .all,
+                       sortOrder: GeoSortOrder = .confidence,
+                       now: Date = Date(),
                        cap: Int) -> [GeoCluster] {
-        guard threshold.isActive else { return Array(clusters.prefix(cap)) }
+        guard threshold.isActive || dateFilter.isActive || sortOrder != .confidence else {
+            return Array(clusters.prefix(cap))
+        }
         let kept = clusters.filter {
             passes(confidence: $0.confidence, plausibility: $0.plausibility,
                    atOrAbove: threshold)
+                && dateFilter.includes($0.end, now: now)
         }
-        return Array(kept.sorted(by: confidenceOrder).prefix(cap))
+        let sorted: [GeoCluster]
+        switch sortOrder {
+        case .confidence:
+            sorted = kept.sorted(by: threshold.isActive ? confidenceOrder : clusterOrder)
+        case .dateNewest:
+            sorted = kept.sorted {
+                $0.start != $1.start ? $0.start > $1.start : confidenceOrder($0, $1)
+            }
+        case .dateOldest:
+            sorted = kept.sorted {
+                $0.start != $1.start ? $0.start < $1.start : confidenceOrder($0, $1)
+            }
+        case .closestDistance:
+            sorted = kept.sorted {
+                $0.spatialSpreadMeters != $1.spatialSpreadMeters
+                    ? $0.spatialSpreadMeters < $1.spatialSpreadMeters
+                    : confidenceOrder($0, $1)
+            }
+        }
+        return Array(sorted.prefix(cap))
     }
 
     /// Dasselbe für den Paar-Modus. `suggestionOrder` sortiert bereits nach
     /// Konfidenz absteigend — es bleibt derselbe Vergleich wie im Scan.
     static func filter(suggestions: [GeoSuggestion],
                        atOrAbove threshold: GeoConfidenceThreshold,
+                       dateFilter: GeoDateFilter = .all,
+                       sortOrder: GeoSortOrder = .confidence,
+                       now: Date = Date(),
                        cap: Int) -> [GeoSuggestion] {
-        guard threshold.isActive else { return Array(suggestions.prefix(cap)) }
+        guard threshold.isActive || dateFilter.isActive || sortOrder != .confidence else {
+            return Array(suggestions.prefix(cap))
+        }
         let kept = suggestions.filter {
             passes(confidence: $0.confidence, plausibility: $0.plausibility,
                    atOrAbove: threshold)
+                && dateFilter.includes($0.orphanTimestamp, now: now)
         }
-        return Array(kept.sorted(by: suggestionOrder).prefix(cap))
+        let sorted: [GeoSuggestion]
+        switch sortOrder {
+        case .confidence:
+            sorted = kept.sorted(by: suggestionOrder)
+        case .dateNewest:
+            sorted = kept.sorted {
+                if $0.orphanTimestamp != $1.orphanTimestamp {
+                    return $0.orphanTimestamp > $1.orphanTimestamp
+                }
+                return suggestionOrder($0, $1)
+            }
+        case .dateOldest:
+            sorted = kept.sorted {
+                if $0.orphanTimestamp != $1.orphanTimestamp {
+                    return $0.orphanTimestamp < $1.orphanTimestamp
+                }
+                return suggestionOrder($0, $1)
+            }
+        case .closestDistance:
+            sorted = kept.sorted {
+                let distA = $0.anchorDistanceMeters ?? Int.max
+                let distB = $1.anchorDistanceMeters ?? Int.max
+                if distA != distB { return distA < distB }
+                if $0.nearestGapSeconds != $1.nearestGapSeconds {
+                    return $0.nearestGapSeconds < $1.nearestGapSeconds
+                }
+                return suggestionOrder($0, $1)
+            }
+        }
+        return Array(sorted.prefix(cap))
     }
 
     /// Anders als `clusterOrder`: Hier steht die Verlässlichkeit vor der Ausbeute,
@@ -196,6 +264,117 @@ enum GeoMatcher {
         if a.confidence != b.confidence { return a.confidence > b.confidence }
         if a.missingCount != b.missingCount { return a.missingCount > b.missingCount }
         return a.id < b.id
+    }
+
+    /// Filtert und sortiert offene Waisen-Sessions.
+    static func filter(orphanSessions: [GeoOrphanSession],
+                       dateFilter: GeoDateFilter = .all,
+                       sortOrder: GeoSortOrder = .confidence,
+                       now: Date = Date(),
+                       cap: Int) -> [GeoOrphanSession] {
+        guard dateFilter.isActive || sortOrder != .confidence else {
+            return Array(orphanSessions.prefix(cap))
+        }
+        let kept = orphanSessions.filter { dateFilter.includes($0.end, now: now) }
+        let sorted: [GeoOrphanSession]
+        switch sortOrder {
+        case .confidence:
+            sorted = kept.sorted(by: orphanSessionOrder)
+        case .dateNewest:
+            sorted = kept.sorted {
+                $0.start != $1.start ? $0.start > $1.start : orphanSessionOrder($0, $1)
+            }
+        case .dateOldest:
+            sorted = kept.sorted {
+                $0.start != $1.start ? $0.start < $1.start : orphanSessionOrder($0, $1)
+            }
+        case .closestDistance:
+            sorted = kept.sorted {
+                let gapA = $0.nearestAnchorGapSeconds ?? Int.max
+                let gapB = $1.nearestAnchorGapSeconds ?? Int.max
+                if gapA != gapB { return gapA < gapB }
+                return orphanSessionOrder($0, $1)
+            }
+        }
+        return Array(sorted.prefix(cap))
+    }
+
+    private static func orphanSessionOrder(_ a: GeoOrphanSession, _ b: GeoOrphanSession) -> Bool {
+        if a.count != b.count { return a.count > b.count }
+        if a.start != b.start { return a.start > b.start }
+        return a.id < b.id
+    }
+
+    // MARK: - Offene Waisen-Sessions
+
+    /// Bündelt isolierte Fotos ohne GPS (die in keinem Cluster mit GPS-Ankern sitzen)
+    /// nach Aufnahmezeit zu Sessions, damit sie gemeinsam einem Ort zugewiesen werden können.
+    static func orphanSessions(sorted: [GeoScanRow],
+                               clusteredOrphanIds: Set<String>,
+                               parameters: GeoParameters,
+                               crowding: [Date: Int] = [:]) -> [GeoOrphanSession] {
+        let anchors = sorted.filter { $0.coordinate != nil }
+        let plausibleCaptureStart = Date(timeIntervalSince1970: 315_532_800) // 1980-01-01
+        let openOrphans = sorted.filter {
+            $0.isOrphan && !clusteredOrphanIds.contains($0.id) && $0.timestamp >= plausibleCaptureStart
+        }
+        guard !openOrphans.isEmpty else { return [] }
+
+        let gap = TimeInterval(parameters.clusterGapMinutes) * 60
+        let microGap = TimeInterval(parameters.microGapMinutes) * 60
+
+        var results: [GeoOrphanSession] = []
+
+        for session in split(openOrphans, atGapLongerThan: gap) {
+            let groups = session.count > parameters.subSplitThreshold
+                ? split(session, atGapLongerThan: microGap)
+                : [session]
+
+            for group in groups {
+                guard group.count >= 2, let first = group.first, let last = group.last else { continue }
+
+                let crowdedShare = crowding.isEmpty ? 0 : Double(
+                    group.count { (crowding[$0.timestamp] ?? 0) >= sharedTimestampFlagThreshold }
+                ) / Double(group.count)
+                let worstCrowd = group.map { crowding[$0.timestamp] ?? 0 }.max() ?? 0
+                let timestampVerdict: GeoPlausibility = crowdedShare > 0.5
+                    ? timestampPlausibility(sharedCount: worstCrowd)
+                    : .ok
+                if timestampVerdict.isSuppressed { continue }
+
+                let startAnchor = nearestAnchor(to: first.timestamp, in: anchors)
+                let endAnchor = nearestAnchor(to: last.timestamp, in: anchors)
+                let bestAnchor: (gapSeconds: Int, latitude: Double, longitude: Double)?
+                switch (startAnchor, endAnchor) {
+                case let (s?, e?):
+                    bestAnchor = s.gapSeconds <= e.gapSeconds ? s : e
+                case let (s?, nil):
+                    bestAnchor = s
+                case let (nil, e?):
+                    bestAnchor = e
+                case (nil, nil):
+                    bestAnchor = nil
+                }
+
+                let orphanIds = group.map(\.id)
+                let timeSpreadMinutes = last.timestamp.timeIntervalSince(first.timestamp) / 60
+
+                results.append(GeoOrphanSession(
+                    id: AssetSetFingerprint.make(orphanIds, prefix: "orphan-session"),
+                    orphanIds: orphanIds,
+                    anchorIds: [],
+                    start: first.timestamp,
+                    end: last.timestamp,
+                    timeSpreadMinutes: timeSpreadMinutes,
+                    nearestAnchorGapSeconds: bestAnchor?.gapSeconds,
+                    nearestAnchorLatitude: bestAnchor?.latitude,
+                    nearestAnchorLongitude: bestAnchor?.longitude,
+                    plausibility: timestampVerdict
+                ))
+            }
+        }
+
+        return results.sorted(by: orphanSessionOrder)
     }
 
     // MARK: - Zweifelhafte Zeitstempel
@@ -341,7 +520,10 @@ enum GeoMatcher {
                 source: .interpolated(beforeId: before.id, afterId: after.id, ratio: ratio),
                 confidence: score,
                 label: label(forScore: score, plausibility: plausibility),
-                plausibility: plausibility
+                plausibility: plausibility,
+                anchorDistanceMeters: Int(distance.rounded()),
+                beforeDeltaSeconds: Int(deltaToBefore.rounded()),
+                afterDeltaSeconds: Int(deltaToAfter.rounded())
             )
         }
 
@@ -354,15 +536,19 @@ enum GeoMatcher {
         let score = pairConfidence(nearestSeconds: abs(delta), anchorDistanceMeters: nil,
                                    timestampVerdict: timestampVerdict)
 
+        let roundedDelta = Int(delta.rounded())
         return GeoSuggestion(
             orphanId: orphan.id,
             orphanTimestamp: target,
             latitude: coordinate.latitude,
             longitude: coordinate.longitude,
-            source: .nearestAnchor(id: single.id, deltaSeconds: Int(delta.rounded())),
+            source: .nearestAnchor(id: single.id, deltaSeconds: roundedDelta),
             confidence: score,
             label: label(forScore: score, plausibility: timestampVerdict),
-            plausibility: timestampVerdict
+            plausibility: timestampVerdict,
+            anchorDistanceMeters: 0,
+            beforeDeltaSeconds: roundedDelta >= 0 ? roundedDelta : nil,
+            afterDeltaSeconds: roundedDelta < 0 ? abs(roundedDelta) : nil
         )
     }
 
@@ -697,5 +883,329 @@ enum GeoMatcher {
         let a = sin(deltaPhi / 2) * sin(deltaPhi / 2)
             + cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2)
         return 2 * earthRadius * atan2(sqrt(a), sqrt(1 - a))
+    }
+
+    // MARK: - Nachbar-Orte (Ortswechsel im Detailblatt)
+
+    /// Findet zeitlich benachbarte GPS-Aufnahmen-Gruppen (auch reine Anker-Gruppen
+    /// ohne eigene Waisen), damit falsch zugeordnete Fotos direkt auf den
+    /// Nachbarort umgebucht werden können.
+    static func alternativeLocations(
+        rows: [GeoScanRow],
+        aroundStart: Date,
+        aroundEnd: Date,
+        currentLatitude: Double? = nil,
+        currentLongitude: Double? = nil,
+        excludingAnchorIds: Set<String> = [],
+        maxResults: Int = 8
+    ) -> [GeoAlternativeLocation] {
+        let anchors = rows
+            .filter { $0.coordinate != nil && !excludingAnchorIds.contains($0.id) }
+            .sorted {
+                $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp
+            }
+        guard !anchors.isEmpty else { return [] }
+
+        let windowRadius: TimeInterval = 36 * 3_600
+        let windowStart = aroundStart.addingTimeInterval(-windowRadius)
+        let windowEnd = aroundEnd.addingTimeInterval(windowRadius)
+
+        var candidates = anchors.filter { $0.timestamp >= windowStart && $0.timestamp <= windowEnd }
+        var groups = groupAlternativeAnchors(
+            candidates,
+            aroundStart: aroundStart,
+            aroundEnd: aroundEnd,
+            currentLatitude: currentLatitude,
+            currentLongitude: currentLongitude
+        )
+
+        // Falls im ±36-Stunden-Fenster weniger als 3 andere Orte liegen, den Suchradius erweitern.
+        if groups.count < 3 && candidates.count < anchors.count {
+            let expandedBefore = anchors.filter { $0.timestamp < windowStart }.suffix(80)
+            let expandedAfter = anchors.filter { $0.timestamp > windowEnd }.prefix(80)
+            candidates = Array(expandedBefore) + candidates + Array(expandedAfter)
+            groups = groupAlternativeAnchors(
+                candidates,
+                aroundStart: aroundStart,
+                aroundEnd: aroundEnd,
+                currentLatitude: currentLatitude,
+                currentLongitude: currentLongitude
+            )
+        }
+
+        let closest = groups
+            .sorted {
+                abs($0.deltaSeconds) == abs($1.deltaSeconds)
+                    ? $0.start < $1.start
+                    : abs($0.deltaSeconds) < abs($1.deltaSeconds)
+            }
+            .prefix(maxResults)
+
+        return Array(closest)
+    }
+
+    private static func groupAlternativeAnchors(
+        _ anchors: [GeoScanRow],
+        aroundStart: Date,
+        aroundEnd: Date,
+        currentLatitude: Double?,
+        currentLongitude: Double?
+    ) -> [GeoAlternativeLocation] {
+        guard !anchors.isEmpty else { return [] }
+
+        let maxGapSeconds: TimeInterval = 15 * 60
+        let maxStepMeters: Double = 150
+
+        var buckets: [[GeoScanRow]] = []
+        var current: [GeoScanRow] = []
+
+        for row in anchors {
+            if let last = current.last,
+               let lastCoord = last.coordinate,
+               let rowCoord = row.coordinate {
+                let timeGap = row.timestamp.timeIntervalSince(last.timestamp)
+                let dist = haversineMeters(lastCoord.latitude, lastCoord.longitude,
+                                           rowCoord.latitude, rowCoord.longitude)
+                if timeGap > maxGapSeconds || dist > maxStepMeters {
+                    buckets.append(current)
+                    current = []
+                }
+            }
+            current.append(row)
+        }
+        if !current.isEmpty { buckets.append(current) }
+
+        var results: [GeoAlternativeLocation] = []
+        for bucket in buckets {
+            let coords = bucket.compactMap(\.coordinate)
+            guard !coords.isEmpty, let first = bucket.first, let last = bucket.last else { continue }
+
+            let medLat = median(coords.map(\.latitude))
+            let medLon = median(coords.map(\.longitude))
+            let distFromOriginal: Double
+            if let currentLatitude, let currentLongitude {
+                distFromOriginal = haversineMeters(currentLatitude, currentLongitude, medLat, medLon)
+                // Nur wirklich andere Orte vorschlagen (nicht denselben Standort nochmal).
+                guard distFromOriginal >= 60 else { continue }
+            } else {
+                distFromOriginal = 0
+            }
+
+            let deltaSeconds: Int
+            if last.timestamp < aroundStart {
+                deltaSeconds = Int(last.timestamp.timeIntervalSince(aroundStart).rounded())
+            } else if first.timestamp > aroundEnd {
+                deltaSeconds = Int(first.timestamp.timeIntervalSince(aroundEnd).rounded())
+            } else {
+                deltaSeconds = 0
+            }
+
+            results.append(GeoAlternativeLocation(
+                id: AssetSetFingerprint.make(bucket.map(\.id), prefix: "alt"),
+                start: first.timestamp,
+                end: last.timestamp,
+                latitude: medLat,
+                longitude: medLon,
+                sampleAnchorIds: Array(bucket.prefix(4).map(\.id)),
+                anchorIds: Array(bucket.prefix(24).map(\.id)),
+                totalAnchorCount: bucket.count,
+                deltaSeconds: deltaSeconds,
+                distanceFromOriginalMeters: Int(distFromOriginal.rounded())
+            ))
+        }
+
+        let sortedByTime = results.sorted {
+            abs($0.deltaSeconds) == abs($1.deltaSeconds)
+                ? $0.start < $1.start
+                : abs($0.deltaSeconds) < abs($1.deltaSeconds)
+        }
+
+        // Räumlich nahe Gruppen (< 200 m) zusammenfassen, damit am selben Hotel/Pool
+        // nicht fünf fast identische Karten nebeneinander auftauchen.
+        var deduplicated: [GeoAlternativeLocation] = []
+        let mergeRadiusMeters: Double = 200
+
+        for candidate in sortedByTime {
+            if let existingIndex = deduplicated.firstIndex(where: {
+                haversineMeters($0.latitude, $0.longitude, candidate.latitude, candidate.longitude) < mergeRadiusMeters
+            }) {
+                let existing = deduplicated[existingIndex]
+                var mergedSamples = existing.sampleAnchorIds
+                for id in candidate.sampleAnchorIds where !mergedSamples.contains(id) && mergedSamples.count < 4 {
+                    mergedSamples.append(id)
+                }
+                var mergedAll = existing.anchorIds
+                for id in candidate.anchorIds where !mergedAll.contains(id) && mergedAll.count < 24 {
+                    mergedAll.append(id)
+                }
+                deduplicated[existingIndex] = GeoAlternativeLocation(
+                    id: existing.id,
+                    start: existing.start,
+                    end: existing.end,
+                    latitude: existing.latitude,
+                    longitude: existing.longitude,
+                    sampleAnchorIds: mergedSamples,
+                    anchorIds: mergedAll,
+                    totalAnchorCount: existing.totalAnchorCount + candidate.totalAnchorCount,
+                    deltaSeconds: existing.deltaSeconds,
+                    distanceFromOriginalMeters: existing.distanceFromOriginalMeters
+                )
+            } else {
+                deduplicated.append(candidate)
+            }
+        }
+        return deduplicated
+    }
+
+    // MARK: - Bekannte Foto-Orte aus der Mediathek
+
+    private struct GridCellKey: Hashable {
+        let latBin: Int
+        let lonBin: Int
+    }
+
+    /// Gruppiert vorhandene GPS-Aufnahmen der Bibliothek zu bekannten Foto-Orten (~250 m Radius),
+    /// filtert optional nach Orts- oder Ländername und sortiert nach Häufigkeit.
+    static func knownPhotoLocations(
+        from rows: [GeoKnownLocationRow],
+        matching query: String = "",
+        limit: Int = 36
+    ) -> [GeoKnownPhotoLocation] {
+        guard !rows.isEmpty, limit > 0 else { return [] }
+
+        var buckets: [GridCellKey: [GeoKnownLocationRow]] = [:]
+        buckets.reserveCapacity(min(rows.count, 4096))
+        for row in rows {
+            let key = GridCellKey(
+                latBin: Int((row.latitude * 250).rounded()),
+                lonBin: Int((row.longitude * 250).rounded())
+            )
+            buckets[key, default: []].append(row)
+        }
+
+        let orderedBuckets = buckets.sorted { lhs, rhs in
+            if lhs.value.count != rhs.value.count { return lhs.value.count > rhs.value.count }
+            if lhs.key.latBin != rhs.key.latBin { return lhs.key.latBin < rhs.key.latBin }
+            return lhs.key.lonBin < rhs.key.lonBin
+        }
+
+        struct MutablePlace {
+            var rows: [GeoKnownLocationRow]
+            let latitude: Double
+            let longitude: Double
+        }
+
+        var places: [MutablePlace] = []
+        places.reserveCapacity(orderedBuckets.count)
+        var cellToPlaceIndex: [GridCellKey: Int] = [:]
+        cellToPlaceIndex.reserveCapacity(orderedBuckets.count)
+
+        for (cellKey, cellRows) in orderedBuckets {
+            let lat = median(cellRows.map(\.latitude))
+            let lon = median(cellRows.map(\.longitude))
+
+            var targetIndex: Int?
+            for dLat in -1...1 {
+                for dLon in -2...2 {
+                    let neighbor = GridCellKey(latBin: cellKey.latBin + dLat, lonBin: cellKey.lonBin + dLon)
+                    if let idx = cellToPlaceIndex[neighbor],
+                       haversineMeters(places[idx].latitude, places[idx].longitude, lat, lon) < 250 {
+                        targetIndex = idx
+                        break
+                    }
+                }
+                if targetIndex != nil { break }
+            }
+
+            if let idx = targetIndex {
+                places[idx].rows.append(contentsOf: cellRows)
+                cellToPlaceIndex[cellKey] = idx
+            } else {
+                let newIndex = places.count
+                places.append(MutablePlace(rows: cellRows, latitude: lat, longitude: lon))
+                cellToPlaceIndex[cellKey] = newIndex
+            }
+        }
+
+        var locations: [GeoKnownPhotoLocation] = []
+        locations.reserveCapacity(places.count)
+
+        for place in places {
+            var cityCounts: [String: Int] = [:]
+            var countryCounts: [String: Int] = [:]
+            var searchTexts: Set<String> = []
+
+            for row in place.rows {
+                if let rawCity = row.city?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCity.isEmpty {
+                    cityCounts[rawCity, default: 0] += 1
+                    searchTexts.insert(rawCity.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))
+                }
+                if let rawCountry = row.country?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCountry.isEmpty {
+                    countryCounts[rawCountry, default: 0] += 1
+                    searchTexts.insert(rawCountry.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))
+                    searchTexts.insert(
+                        Laendernamen.anzeigename(fuer: rawCountry)
+                            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                    )
+                }
+            }
+
+            let topCity = cityCounts.max {
+                $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key
+            }?.key
+            let topCountry = countryCounts.max {
+                $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key
+            }?.key
+
+            let sortedByNewest = place.rows.sorted {
+                if $0.timestamp != $1.timestamp { return $0.timestamp > $1.timestamp }
+                return $0.id < $1.id
+            }
+            guard let newest = sortedByNewest.first else { continue }
+
+            let allIds = sortedByNewest.map(\.id)
+            locations.append(GeoKnownPhotoLocation(
+                id: AssetSetFingerprint.make(allIds, prefix: "known"),
+                city: topCity,
+                country: topCountry.map { Laendernamen.anzeigename(fuer: $0) },
+                latitude: place.latitude,
+                longitude: place.longitude,
+                sampleAnchorIds: Array(allIds.prefix(4)),
+                anchorIds: Array(allIds.prefix(24)),
+                totalAnchorCount: allIds.count,
+                latestTimestamp: newest.timestamp,
+                searchTokens: Array(searchTexts).sorted()
+            ))
+        }
+
+        let sorted = locations.sorted { lhs, rhs in
+            if lhs.totalAnchorCount != rhs.totalAnchorCount { return lhs.totalAnchorCount > rhs.totalAnchorCount }
+            if lhs.latestTimestamp != rhs.latestTimestamp { return lhs.latestTimestamp > rhs.latestTimestamp }
+            return lhs.id < rhs.id
+        }
+        return filterKnownLocations(sorted, matching: query, limit: limit)
+    }
+
+    /// Filtert bereits gruppierte `GeoKnownPhotoLocation`-Orte nach Suchbegriff.
+    static func filterKnownLocations(
+        _ locations: [GeoKnownPhotoLocation],
+        matching query: String,
+        limit: Int = 36
+    ) -> [GeoKnownPhotoLocation] {
+        guard limit > 0 else { return [] }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return Array(locations.prefix(limit))
+        }
+        let foldedQuery = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let matching = locations.filter { location in
+            if location.searchTokens.contains(where: { $0.contains(foldedQuery) }) {
+                return true
+            }
+            return location.displayTitle
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .contains(foldedQuery)
+        }
+        return Array(matching.prefix(limit))
     }
 }

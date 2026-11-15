@@ -12,6 +12,14 @@ struct PhoneFavoritenKachel: View {
     /// Offline-Zustand der Favoriten; `.cloud` zeigt nichts an.
     var badge: OfflineBadge = .cloud
 
+    /// Online immer (ohne Suchbegriff); offline nur mit Offline-Vermerk. Bis
+    /// 26.10.2026 verschwand die Kachel offline ganz, obwohl die Favoriten auf dem
+    /// iPhone lagen — die Regel stammte aus der Zeit vor den Offline-Quellen.
+    static func sichtbar(suchtext: String, istOffline: Bool, hatClient: Bool, offlineGespeichert: Bool) -> Bool {
+        guard suchtext.isEmpty, hatClient else { return false }
+        return !istOffline || offlineGespeichert
+    }
+
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: "star.fill")
@@ -56,16 +64,24 @@ struct PhoneFavoritenView: View {
     private var istOffline: Bool { connection.state.isOffline }
 
     var body: some View {
-        ScrollView {
-            PhoneFeedRaster(feed: feed, apiClient: apiClient, istOffline: istOffline)
+        Group {
+            if istOffline {
+                // Ohne Netz der gespeicherte Bestand, wie bei „Letzte Tage“.
+                PhoneZuletztInhalt(kind: .favoriten, targetId: OfflineQuellenFilter.favoritenTargetId,
+                                   leerText: String(localized: "Favorites load directly from the server."))
+            } else {
+                ScrollView {
+                    PhoneFeedRaster(feed: feed, apiClient: apiClient, istOffline: istOffline)
+                }
+                .overlay {
+                    if feed.abschnitte.isEmpty { leerzustand }
+                }
+            }
         }
         .navigationTitle(PhoneOrtsTexts.favoriten)
         .navigationBarTitleDisplayMode(.inline)
         .offlineQuelleKnopf(kind: .favoriten, targetId: OfflineQuellenFilter.favoritenTargetId,
                             titel: PhoneOrtsTexts.favoriten)
-        .overlay {
-            if feed.abschnitte.isEmpty { leerzustand }
-        }
         .refreshable {
             await feed.ladeVonVorne(apiClient: apiClient)
         }
@@ -77,13 +93,7 @@ struct PhoneFavoritenView: View {
 
     @ViewBuilder
     private var leerzustand: some View {
-        if istOffline {
-            ContentUnavailableView(
-                "Offline",
-                systemImage: "airplane",
-                description: Text("Favorites load directly from the server.")
-            )
-        } else if let fehler = feed.fehler {
+        if let fehler = feed.fehler {
             ContentUnavailableView(
                 "Favorites Unavailable",
                 systemImage: "wifi.slash",

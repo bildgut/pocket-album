@@ -24,12 +24,78 @@ enum ConnectionState: Equatable {
     }
 }
 
+/// Aktive Verbindungsroute bei konfigurierter Dual-URL („Home & Away").
+enum ServerRouteKind: String, Equatable, Sendable {
+    case primary
+    case external
+
+    var kurzName: String {
+        switch self {
+        case .primary: return "Lokal"
+        case .external: return "Remote"
+        }
+    }
+
+    var beschreibung: String {
+        switch self {
+        case .primary: return "Primär-URL (Lokal)"
+        case .external: return "Externe URL (Remote)"
+        }
+    }
+}
+
+/// Normiert Bild-Cache-Schlüssel der externen URL auf die kanonische Primär-URL,
+/// sodass der 2-GB-Platten- und 500-MB-Speichercache beim Wechsel zwischen Heimnetz
+/// und Unterwegs ohne erneuten Download zu 100 % weitertrifft.
+final class ImmichImageCacheKeyDelegate: ImagePipelineDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var primaryURL: URL?
+    private var externalURL: URL?
+
+    init(primaryURL: URL? = nil, externalURL: URL? = nil) {
+        self.primaryURL = primaryURL
+        self.externalURL = externalURL
+    }
+
+    func updateEndpoints(primary: URL?, external: URL?) {
+        lock.lock()
+        self.primaryURL = primary
+        self.externalURL = (external == primary) ? nil : external
+        lock.unlock()
+    }
+
+    func canonicalCacheKey(for url: URL, processorIdentifiers: [String] = []) -> String? {
+        lock.lock()
+        let primary = primaryURL
+        let external = externalURL
+        lock.unlock()
+
+        guard let primary, let external,
+              let rewritten = ImmichAPIClient.rewriteOrigin(of: url, from: external, to: primary) else {
+            return nil
+        }
+        if processorIdentifiers.isEmpty {
+            return rewritten.absoluteString
+        }
+        return rewritten.absoluteString + processorIdentifiers.joined()
+    }
+
+    func cacheKey(for request: ImageRequest, pipeline: ImagePipeline) -> String? {
+        guard let url = request.url else { return nil }
+        return canonicalCacheKey(for: url, processorIdentifiers: request.processors.map(\.identifier))
+    }
+}
+
 @Observable
 @MainActor
 final class ConnectionManager {
     var state: ConnectionState = .disconnected
     var apiClient: ImmichAPIClient?
     var imagePipeline: ImagePipeline?
+    /// Aktive Route (`Lokal` vs. `Remote`), relevant sobald eine externe Fallback-URL hinterlegt ist.
+    private(set) var activeRoute: ServerRouteKind = .primary
+    private let cacheKeyDelegate = ImmichImageCacheKeyDelegate()
+    private var routeProbeTask: Task<Void, Never>?
     /// Session-Flag: gesperrter Ordner ist entsperrt (nur für App-Laufzeit, kein Persist)
     var isLockedFolderUnlocked: Bool = false
     /// Session token for Sync Stream API (obtained via email/password login)
@@ -42,8 +108,16 @@ final class ConnectionManager {
     var beiKontoWechsel: (@MainActor () async -> Void)?
     /// Kaltstart mit gespeicherten Zugangsdaten und Cache: sofort `.offline` zeigen
     /// und im Hintergrund verbinden, statt bis zur Frist auf „Verbinde…“ zu stehen.
-    /// Setzt nur der iOS-Client; der Mac verbindet wie bisher sichtbar.
     var sofortOfflineBeimKaltstart = false
+    /// Wahr, solange die erste Hintergrund-Verbindungsprüfung nach einem optimistischen
+    /// Kaltstart noch läuft — unterdrückt das kurzzeitige Aufblitzen des Offline-Banners,
+    /// wenn der Server erreichbar ist.
+    private(set) var prueftKaltstartVerbindung = false
+    /// Aus `.offline` von selbst wieder verbinden: mit wachsenden Pausen
+    /// (``wiederverbindenPause(versuch:)``) und bei jeder Pfadänderung.
+    var wiederholtVerbindenWennOffline = false
+    private var wiederverbindenTask: Task<Void, Never>?
+    private var verbindetAutomatisch = false
     /// Basis aller Clients, die `connect` anlegt. Injizierbar für Tests.
     var sitzungsKonfiguration: URLSessionConfiguration = .default
     private var networkMonitor: NWPathMonitor?
@@ -61,6 +135,114 @@ final class ConnectionManager {
         KeychainStore.read(key: "serverURL") ?? ""
     }
 
+    var externalServerURL: String {
+        KeychainStore.read(key: "externalServerURL") ?? ""
+    }
+
+    var activeServerURL: String {
+        apiClient?.baseURL.absoluteString ?? serverURL
+    }
+
+    var hasDualURLs: Bool {
+        guard let primary = Self.normalizeServerURL(serverURL),
+              let external = Self.normalizeServerURL(externalServerURL) else {
+            return false
+        }
+        return primary != external
+    }
+
+    /// Speichert (oder löscht bei leerem String) die optionale externe Fallback-URL
+    /// und aktualisiert den kanonischen Bild-Cache-Delegaten.
+    func saveExternalServerURL(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainStore.delete(key: "externalServerURL")
+        } else if let normalized = Self.normalizeServerURL(trimmed) {
+            KeychainStore.save(key: "externalServerURL", value: normalized.absoluteString)
+        } else {
+            KeychainStore.save(key: "externalServerURL", value: trimmed)
+        }
+        cacheKeyDelegate.updateEndpoints(
+            primary: Self.normalizeServerURL(serverURL),
+            external: Self.normalizeServerURL(externalServerURL)
+        )
+    }
+
+    nonisolated static func normalizeServerURL(_ raw: String) -> URL? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if !s.lowercased().hasPrefix("http://") && !s.lowercased().hasPrefix("https://") {
+            s = "http://\(s)"
+        }
+        while s.hasSuffix("/") && s.count > 8 {
+            s.removeLast()
+        }
+        guard let url = URL(string: s), let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// Ermittelt parallel die schnellste erreichbare Route:
+    /// - Antwortet die Primär-URL (`Lokal`) zuerst, gewinnt sie sofort.
+    /// - Antwortet die externe URL zuerst, erhält `Lokal` noch ein kurzes Vorzugsfenster
+    ///   (`lanPreferenceGrace`, Standard 150 ms), damit im Heimnetz 10-GbE-LAN Vorrang vor
+    ///   Hairpin-Proxy/Tailscale behält — unterwegs fällt die Entscheidung trotzdem in ~200 ms
+    ///   statt auf den vollen LAN-Timeout zu warten.
+    nonisolated static func chooseBestRoute(
+        primaryURL: URL,
+        externalURL: URL?,
+        lanPreferenceGrace: Duration = .milliseconds(150),
+        ping: @Sendable @escaping (URL, ServerRouteKind) async -> Bool
+    ) async -> (url: URL, route: ServerRouteKind)? {
+        guard let extURL = externalURL, extURL != primaryURL else {
+            return await ping(primaryURL, .primary) ? (primaryURL, .primary) : nil
+        }
+
+        return await withTaskGroup(of: (ServerRouteKind?, Bool).self) { group in
+            group.addTask { (.primary, await ping(primaryURL, .primary)) }
+            group.addTask { (.external, await ping(extURL, .external)) }
+
+            var primaryResult: Bool?
+            var externalResult: Bool?
+
+            while let (kind, ok) = await group.next() {
+                guard let kind else {
+                    // Grace-Timer abgelaufen, während `externalResult == true` bereits vorlag
+                    if externalResult == true {
+                        group.cancelAll()
+                        return (extURL, .external)
+                    }
+                    continue
+                }
+                switch kind {
+                case .primary:
+                    primaryResult = ok
+                    if ok {
+                        group.cancelAll()
+                        return (primaryURL, .primary)
+                    }
+                    if externalResult == true {
+                        group.cancelAll()
+                        return (extURL, .external)
+                    }
+                case .external:
+                    externalResult = ok
+                    if ok {
+                        if primaryResult == false {
+                            group.cancelAll()
+                            return (extURL, .external)
+                        }
+                        // Kurzes Vorzugsfenster für LAN direkt in derselben TaskGroup planen
+                        group.addTask {
+                            try? await Task.sleep(for: lanPreferenceGrace)
+                            return (nil, false)
+                        }
+                    }
+                }
+            }
+            return nil
+        }
+    }
+
     init() {
         // Load credentials synchronously during init so isConfigured is correct
         // before ContentView.body is ever evaluated by SwiftUI.
@@ -69,6 +251,10 @@ final class ConnectionManager {
         KeychainStore.loadAll()
         isConfigured = KeychainStore.read(key: "serverURL") != nil
             && KeychainStore.read(key: "apiKey") != nil
+        cacheKeyDelegate.updateEndpoints(
+            primary: Self.normalizeServerURL(KeychainStore.read(key: "serverURL") ?? ""),
+            external: Self.normalizeServerURL(KeychainStore.read(key: "externalServerURL") ?? "")
+        )
     }
 
     /// Re-evaluate isConfigured from the current credential store.
@@ -82,9 +268,31 @@ final class ConnectionManager {
         state.isConnected && isNetworkAvailable
     }
 
+    /// Ob die aktuelle Netzwerkverbindung als teuer (z. B. persönlicher Hotspot)
+    /// oder im Datensparmodus (`isConstrained`) eingestuft ist.
+    var isExpensiveOrConstrainedNetwork: Bool {
+        guard let path = networkMonitor?.currentPath else { return false }
+        return path.isExpensive || path.isConstrained
+    }
+
     // MARK: - Connect
 
-    func connect(serverURL: String, apiKey: String, email: String? = nil, password: String? = nil, isAutoReconnect: Bool = false) async {
+    /// Bereitet schon vor dem ersten SwiftUI-Renderpass den optimistischen lokalen
+    /// Browsing-Zustand vor, sofern Zugangsdaten und lokaler Cache vorhanden sind.
+    func vorbereiteKaltstartMitCache() {
+        guard sofortOfflineBeimKaltstart, isConfigured, !state.canBrowse, hasCachedData() else { return }
+        prueftKaltstartVerbindung = true
+        goOfflineIfCached()
+    }
+
+    func connect(
+        serverURL: String,
+        externalServerURL: String? = nil,
+        apiKey: String,
+        email: String? = nil,
+        password: String? = nil,
+        isAutoReconnect: Bool = false
+    ) async {
         // Sichtbar „Verbinde…“ nur beim manuellen Verbinden und beim Kaltstart ohne
         // Inhalt. Ein automatisches Wiederverbinden aus `.offline`/`.connected` lässt
         // den Zustand stehen, bis Erfolg oder Fehler feststeht — sonst risse die
@@ -93,11 +301,13 @@ final class ConnectionManager {
             state = .connecting
         } else if !state.canBrowse {
             if sofortOfflineBeimKaltstart, hasCachedData() {
+                prueftKaltstartVerbindung = true
                 goOfflineIfCached()
             } else {
                 state = .connecting
             }
         }
+        defer { prueftKaltstartVerbindung = false }
         AppLogger.connection.debug("Connecting to: \(serverURL)")
 
         // Normalize URL
@@ -109,46 +319,142 @@ final class ConnectionManager {
             urlString = String(urlString.dropLast())
         }
 
-        guard let url = URL(string: urlString) else {
+        guard let primaryURL = URL(string: urlString) else {
             state = .error("Invalid URL: \(urlString)")
             return
         }
 
-        let client = ImmichAPIClient(baseURL: url, apiKey: apiKey, sessionConfiguration: sitzungsKonfiguration)
-        // Eigener Client mit kurzer Frist nur für die Erreichbarkeit: Ohne VPN kommt
-        // kein Sofortfehler, sondern Schweigen bis zur Frist.
-        let pruefer = ImmichAPIClient(baseURL: url, apiKey: apiKey, sessionConfiguration: sitzungsKonfiguration,
-                                      anfrageFrist: ImmichAPIClient.kurzeFrist)
+        let rawExternal = externalServerURL ?? KeychainStore.read(key: "externalServerURL")
+        let normalizedExternal: URL? = {
+            guard let rawExternal, !rawExternal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let candidate = Self.normalizeServerURL(rawExternal),
+                  candidate != primaryURL else { return nil }
+            return candidate
+        }()
+        cacheKeyDelegate.updateEndpoints(primary: primaryURL, external: normalizedExternal)
+
+        let sessionCfg = sitzungsKonfiguration
 
         do {
-            let pong: Bool
-            do {
-                pong = try await pingWithRetry(client: pruefer)
-            } catch is DecodingError {
-                // 200 mit HTML (Proxy-Startseite, falscher Dienst): kein Immich.
-                throw APIError.keinImmich
-            }
-            AppLogger.connection.info("Ping result: \(pong)")
-            guard pong else {
-                if isAutoReconnect { bleibOfflineOderGehOffline() }
-                else { state = .error("Server did not respond to ping") }
-                return
+            let activeURL: URL
+            let chosenRoute: ServerRouteKind
+            let pruefer: ImmichAPIClient
+
+            if let extURL = normalizedExternal {
+                // Dual-URL Race-Ping: schneller Timeout auf Lokal (1,8 s), reguläre Kurzfrist auf Remote (6 s)
+                let winner = await Self.chooseBestRoute(
+                    primaryURL: primaryURL,
+                    externalURL: extURL
+                ) { candidateURL, routeKind in
+                    let timeout: TimeInterval = (routeKind == .primary) ? 1.8 : ImmichAPIClient.kurzeFrist
+                    let probe = ImmichAPIClient(
+                        baseURL: candidateURL,
+                        canonicalBaseURL: primaryURL,
+                        apiKey: apiKey,
+                        sessionConfiguration: sessionCfg,
+                        anfrageFrist: timeout
+                    )
+                    return (try? await probe.ping()) == true
+                }
+
+                if let winner {
+                    activeURL = winner.url
+                    chosenRoute = winner.route
+                    pruefer = ImmichAPIClient(
+                        baseURL: activeURL,
+                        canonicalBaseURL: primaryURL,
+                        apiKey: apiKey,
+                        sessionConfiguration: sessionCfg,
+                        anfrageFrist: ImmichAPIClient.kurzeFrist
+                    )
+                    AppLogger.connection.info("Dual-URL: Route \(chosenRoute.kurzName) gewählt (\(activeURL.absoluteString))")
+                } else if isAutoReconnect {
+                    bleibOfflineOderGehOffline()
+                    return
+                } else {
+                    // Beide Routen still — einmal regulär gegen Primär-URL prüfen, um klaren Fehlertext zu liefern
+                    let diagClient = ImmichAPIClient(
+                        baseURL: primaryURL,
+                        canonicalBaseURL: primaryURL,
+                        apiKey: apiKey,
+                        sessionConfiguration: sessionCfg,
+                        anfrageFrist: 2.5
+                    )
+                    do {
+                        let pong = try await diagClient.ping()
+                        if !pong {
+                            state = .error("Weder Lokal (\(primaryURL.host ?? urlString)) noch Externe URL antwortet")
+                            return
+                        }
+                        activeURL = primaryURL
+                        chosenRoute = .primary
+                        pruefer = diagClient
+                    } catch is DecodingError {
+                        throw APIError.keinImmich
+                    }
+                }
+            } else {
+                // Klassischer Einzel-URL-Pfad
+                activeURL = primaryURL
+                chosenRoute = .primary
+                pruefer = ImmichAPIClient(
+                    baseURL: primaryURL,
+                    canonicalBaseURL: primaryURL,
+                    apiKey: apiKey,
+                    sessionConfiguration: sessionCfg,
+                    anfrageFrist: ImmichAPIClient.kurzeFrist
+                )
+                let pong: Bool
+                do {
+                    pong = try await pingWithRetry(client: pruefer)
+                } catch is DecodingError {
+                    // 200 mit HTML (Proxy-Startseite, falscher Dienst): kein Immich.
+                    throw APIError.keinImmich
+                }
+                AppLogger.connection.info("Ping result: \(pong)")
+                guard pong else {
+                    if isAutoReconnect { bleibOfflineOderGehOffline() }
+                    else { state = .error("Server did not respond to ping") }
+                    return
+                }
             }
 
+            let client: ImmichAPIClient
+            if let existing = self.apiClient, existing.apiKey == apiKey {
+                existing.updateBaseURL(activeURL, canonicalURL: primaryURL)
+                client = existing
+            } else {
+                client = ImmichAPIClient(
+                    baseURL: activeURL,
+                    canonicalBaseURL: primaryURL,
+                    apiKey: apiKey,
+                    sessionConfiguration: sessionCfg
+                )
+            }
+
+            // Version + API-Key-Gültigkeit parallel prüfen statt nacheinander.
+            async let versionTask = pruefer.getServerVersion()
+            async let keyTask: Void = pruefer.pruefeSchluessel()
             let version: String
             do {
-                version = try await pruefer.getServerVersion()
+                version = try await versionTask
             } catch is DecodingError {
                 throw APIError.keinImmich
             }
             // Vor dem Speichern: Ping und Version gehen auch ohne gültigen Schlüssel.
-            try await pruefer.pruefeSchluessel()
+            try await keyTask
 
-            // Rechte des Keys: gelernte Sperren dieses Keys laden, dann die frische
-            // Meldung darüberlegen. Scheitert die Meldung (älterer Server), bleibt es
-            // bei den gelernten Sperren — nichts Unbekanntes wird gesperrt.
+            // Rechte des Keys + ggf. Session-Token-Validierung parallel ausführen.
+            let savedToken = KeychainStore.read(key: "sessionToken")
+            let shouldValidateSession = (email != nil && !(email?.isEmpty ?? true) && password != nil && !(password?.isEmpty ?? true) && savedToken != nil)
+
+            async let gemeldeteRechteTask: Set<String>? = try? await client.eigeneKeyRechte()
+            async let validatedSessionResult: Result<String?, Error>? = shouldValidateSession
+                ? await Result { try await ImmichAPIClient.validateSessionToken(baseURL: activeURL, sessionToken: savedToken!) }
+                : nil
+
             var rechte = KeyRechte(abgelehnt: KeyRechteSpeicher.ladeAbgelehnt(apiKey: apiKey))
-            if let gemeldet = try? await client.eigeneKeyRechte() {
+            if let gemeldet = await gemeldeteRechteTask {
                 rechte.uebernimmMeldung(gemeldet)
                 KeyRechteSpeicher.speichereAbgelehnt(rechte.abgelehnt, apiKey: apiKey)
             }
@@ -175,10 +481,14 @@ final class ConnectionManager {
 
             // Save credentials and update observable state
             KeychainStore.save(key: "serverURL", value: urlString)
+            if let externalServerURL {
+                saveExternalServerURL(externalServerURL)
+            }
             KeychainStore.save(key: "apiKey", value: apiKey)
             refreshConfiguredState()
 
             // Attempt session login for Sync Stream API (optional)
+            let sessionValidation = await validatedSessionResult
             if let email, !email.isEmpty, let password, !password.isEmpty {
                 // Die Sync-Stream-Checkpoints hängen serverseitig an der Session.
                 // Ein frischer Login bei jedem Verbinden würde eine neue Session
@@ -186,12 +496,10 @@ final class ConnectionManager {
                 // Stream-Replay (~155k Zeilen, ~80 s) erzwingen. Deshalb zuerst
                 // den gespeicherten Token validieren und nur bei 401 neu einloggen.
                 var reusedToken: String?
-                let savedToken = KeychainStore.read(key: "sessionToken")
-                if let savedToken {
-                    do {
-                        if let tokenEmail = try await ImmichAPIClient.validateSessionToken(
-                            baseURL: url, sessionToken: savedToken
-                        ) {
+                if let sessionValidation {
+                    switch sessionValidation {
+                    case .success(let tokenEmail):
+                        if let tokenEmail {
                             if tokenEmail.caseInsensitiveCompare(email) == .orderedSame {
                                 reusedToken = savedToken
                             } else {
@@ -200,7 +508,7 @@ final class ConnectionManager {
                         } else {
                             AppLogger.connection.info("Saved session token rejected by server (401) — fresh login")
                         }
-                    } catch {
+                    case .failure(let error):
                         // Kein 401, sondern Netzwerk-/Serverfehler: Token behalten.
                         // Falls er doch tot ist, fällt der Sync auf Polling zurück
                         // und der nächste Connect loggt neu ein.
@@ -217,12 +525,12 @@ final class ConnectionManager {
                 } else {
                     do {
                         let loginResponse = try await ImmichAPIClient.login(
-                            baseURL: url, email: email, password: password
+                            baseURL: activeURL, email: email, password: password
                         )
                         // Verwaiste Session des alten Tokens serverseitig aufräumen,
                         // damit sich Sessions + Checkpoints nicht ansammeln.
                         if let savedToken, savedToken != loginResponse.accessToken {
-                            await ImmichAPIClient.logout(baseURL: url, sessionToken: savedToken)
+                            await ImmichAPIClient.logout(baseURL: activeURL, sessionToken: savedToken)
                         }
                         self.sessionToken = loginResponse.accessToken
                         KeychainStore.save(key: "sessionToken", value: loginResponse.accessToken)
@@ -237,20 +545,33 @@ final class ConnectionManager {
                 }
             } else {
                 // Try restoring saved session token
-                self.sessionToken = KeychainStore.read(key: "sessionToken")
+                self.sessionToken = savedToken
                 if sessionToken != nil {
                     AppLogger.connection.debug("Restored session token from saved credentials")
                 }
             }
 
-            // Set up image pipeline with API key header
-            self.imagePipeline = Self.makeImagePipeline(apiKey: apiKey, cacheSetup: { thumb in
-                self.thumbnailCache = thumb
-            })
+            // Set up image pipeline with API key header (wiederverwenden, wenn bereits im
+            // optimistischen Kaltstart mit identischen Zugangsdaten aufgebaut).
+            let previousRoute = self.activeRoute
+            if self.imagePipeline == nil || self.apiClient !== client {
+                self.imagePipeline = Self.makeImagePipeline(
+                    apiKey: apiKey,
+                    delegate: cacheKeyDelegate,
+                    cacheSetup: { thumb in
+                        self.thumbnailCache = thumb
+                    }
+                )
+                applySavedCacheLimits()
+            }
             self.apiClient = client
+            self.activeRoute = chosenRoute
             self.state = .connected(version: version)
-            applySavedCacheLimits()
-            AppLogger.connection.info("Connected to \(urlString) (v\(version))")
+            stoppeWiederverbinden()
+            if previousRoute != chosenRoute {
+                NotificationCenter.default.post(name: .serverRouteDidChange, object: nil)
+            }
+            AppLogger.connection.info("Connected to \(activeURL.absoluteString) [\(chosenRoute.kurzName)] (v\(version))")
 
             startNetworkMonitoring()
 
@@ -286,9 +607,19 @@ final class ConnectionManager {
     /// Baut dabei einen apiClient aus den gespeicherten Credentials (kein Ping), damit
     /// MainView (das apiClient: nicht-optional erwartet) funktioniert.
     private func goOfflineIfCached() {
-        guard let urlString = KeychainStore.read(key: "serverURL"),
-              let apiKey = KeychainStore.read(key: "apiKey"),
-              let url = URL(string: urlString) else {
+        guard let rawURL = KeychainStore.read(key: "serverURL"),
+              let apiKey = KeychainStore.read(key: "apiKey") else {
+            state = .disconnected
+            return
+        }
+        var urlString = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !urlString.hasPrefix("http") {
+            urlString = "http://\(urlString)"
+        }
+        if urlString.hasSuffix("/") {
+            urlString = String(urlString.dropLast())
+        }
+        guard let url = URL(string: urlString) else {
             state = .disconnected
             return
         }
@@ -304,17 +635,26 @@ final class ConnectionManager {
             return
         }
 
-        // apiClient ohne Ping aufbauen, nur für Offline-Betrieb
-        let client = ImmichAPIClient(baseURL: url, apiKey: apiKey)
-        self.imagePipeline = Self.makeImagePipeline(apiKey: apiKey, cacheSetup: { thumb in
-            self.thumbnailCache = thumb
-        })
+        // apiClient ohne Ping aufbauen, damit das lokale Raster ohne Netzwerkwartezeit rendert
+        let extURL = Self.normalizeServerURL(KeychainStore.read(key: "externalServerURL") ?? "")
+        cacheKeyDelegate.updateEndpoints(primary: url, external: extURL)
+        let client = ImmichAPIClient(baseURL: url, canonicalBaseURL: url, apiKey: apiKey, sessionConfiguration: sitzungsKonfiguration)
+        self.imagePipeline = Self.makeImagePipeline(
+            apiKey: apiKey,
+            delegate: cacheKeyDelegate,
+            cacheSetup: { thumb in
+                self.thumbnailCache = thumb
+            }
+        )
         self.apiClient = client
         self.sessionToken = KeychainStore.read(key: "sessionToken")
         self.state = .offline
         applySavedCacheLimits()
-        AppLogger.connection.info("Kaltstart offline — starte im Offline-Modus mit gecachten Daten")
+        AppLogger.connection.info("Kaltstart mit lokalem Cache — zeige Raster sofort")
         startNetworkMonitoring()
+        if !prueftKaltstartVerbindung && !verbindetAutomatisch {
+            starteWiederverbinden()
+        }
     }
 
     /// Prüft, ob es je etwas zu zeigen gab — ohne ModelContext, daher über UserDefaults.
@@ -346,9 +686,58 @@ final class ConnectionManager {
               let apiKey = KeychainStore.read(key: "apiKey") else {
             return
         }
+        // Wiederholung, Pfadwechsel und der Knopf können sich überschneiden: Zwei
+        // `connect` zugleich bauten zwei Clients und Pipelines.
+        guard !verbindetAutomatisch else { return }
+        verbindetAutomatisch = true
+        defer { verbindetAutomatisch = false }
         let email = KeychainStore.read(key: "email")
         let password = KeychainStore.read(key: "password")
         await connect(serverURL: urlString, apiKey: apiKey, email: email, password: password, isAutoReconnect: true)
+        // Gescheitert (etwa „Erneut verbinden“ ohne Server): weiter versuchen.
+        if state.isOffline, wiederverbindenTask == nil { starteWiederverbinden() }
+    }
+
+    // MARK: - Wiederverbinden aus dem Offline-Modus
+
+    /// Pause vor dem `versuch`-ten automatischen Wiederverbinden (ab 0): 5 s, 15 s,
+    /// 30 s, danach jede Minute.
+    nonisolated static func wiederverbindenPause(versuch: Int) -> Duration {
+        let stufen: [Duration] = [.seconds(5), .seconds(15), .seconds(30)]
+        return versuch < stufen.count ? stufen[versuch] : .seconds(60)
+    }
+
+    /// Versucht aus `.offline` wiederholt neu zu verbinden, solange das Netz nutzbar
+    /// ist. Vorher geschah das genau einmal, wenn das Netz wiederkam: Nach dem
+    /// Flugmodus war WLAN schneller da als der Tailscale-Tunnel, der eine Versuch
+    /// scheiterte, und die App blieb „Offline“ (Gerätebefund 26.10.2026).
+    /// - Parameter sofort: ohne erste Pause (Rückkehr in den Vordergrund, Pfadwechsel).
+    func starteWiederverbinden(sofort: Bool = false) {
+        guard wiederholtVerbindenWennOffline, state.isOffline else { return }
+        wiederverbindenTask?.cancel()
+        wiederverbindenTask = Task { @MainActor [weak self] in
+            var versuch = 0
+            while !Task.isCancelled {
+                if !(sofort && versuch == 0) {
+                    try? await Task.sleep(for: Self.wiederverbindenPause(versuch: sofort ? versuch - 1 : versuch))
+                }
+                guard !Task.isCancelled, let self else { return }
+                guard self.state.isOffline else { self.wiederverbindenTask = nil; return }
+                if self.isNetworkAvailable {
+                    AppLogger.connection.info("Offline — Wiederverbinden, Versuch \(versuch + 1)")
+                    // Eigener Task: Ein Neustart der Schleife (Pfadwechsel) bräche sonst
+                    // ein laufendes `connect` mitten in den Anfragen ab.
+                    await Task { await self.reconnect() }.value
+                    if !self.state.isOffline { return }
+                }
+                versuch += 1
+            }
+        }
+    }
+
+    private func stoppeWiederverbinden() {
+        wiederverbindenTask?.cancel()
+        wiederverbindenTask = nil
     }
 
     func disconnect() {
@@ -358,11 +747,16 @@ final class ConnectionManager {
         KeychainStore.deleteAll()
         KeyRechteSpeicher.vergiss()
         keyRechte = KeyRechte()
+        routeProbeTask?.cancel()
+        routeProbeTask = nil
         apiClient = nil
         imagePipeline = nil
         thumbnailCache = nil
+        activeRoute = .primary
+        cacheKeyDelegate.updateEndpoints(primary: nil, external: nil)
         isLockedFolderUnlocked = false
         stopNetworkMonitoring()
+        stoppeWiederverbinden()
         state = .disconnected
         refreshConfiguredState()
     }
@@ -380,6 +774,7 @@ final class ConnectionManager {
     func goOffline() {
         if state.isConnected {
             state = .offline
+            starteWiederverbinden()
         }
     }
 
@@ -399,7 +794,7 @@ final class ConnectionManager {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let wasAvailable = self.isNetworkAvailable
-                self.isNetworkAvailable = path.status == .satisfied
+                self.isNetworkAvailable = Self.netzNutzbar(path)
 
                 if !self.isNetworkAvailable && wasAvailable {
                     // Network dropped
@@ -409,11 +804,98 @@ final class ConnectionManager {
                     // Network returned — try to reconnect
                     AppLogger.connection.info("Network returned — attempting reconnect")
                     await self.reconnect()
+                    self.starteWiederverbinden()
+                } else if self.isNetworkAvailable, self.state.isOffline {
+                    // Anderer Pfad bei gleicher Verfügbarkeit, etwa Tailscale an:
+                    // Der Server kann jetzt erreichbar sein.
+                    self.starteWiederverbinden(sofort: true)
+                } else if self.isNetworkAvailable, self.state.isConnected, self.hasDualURLs {
+                    // Pfadwechsel bei bestehender Verbindung (z. B. Rückkehr ins Heim-WLAN
+                    // oder Wechsel auf Hotspot): im Hintergrund prüfen, ob Lokal/Remote jetzt
+                    // besser erreichbar ist.
+                    self.planeHintergrundRoutenPruefung()
                 }
             }
         }
         monitor.start(queue: monitorQueue)
         self.networkMonitor = monitor
+    }
+
+    /// Entprellte Hintergrund-Routenprüfung bei Netzwerkpfadwechseln (`NWPathMonitor`),
+    /// damit kurz aufeinanderfolgende Interface-Events nur einen einzigen Race-Ping auslösen.
+    private func planeHintergrundRoutenPruefung() {
+        routeProbeTask?.cancel()
+        routeProbeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard !Task.isCancelled, let self else { return }
+            await self.pruefeOptimaleRoute()
+        }
+    }
+
+    /// Prüft im laufenden Betrieb (ohne `state` auf `.connecting` zu setzen), ob zwischen
+    /// Primär-URL (`Lokal`) und externer URL (`Remote`) gewechselt werden sollte.
+    @discardableResult
+    func pruefeOptimaleRoute() async -> ServerRouteKind? {
+        guard let primaryURL = Self.normalizeServerURL(serverURL),
+              let apiKey = KeychainStore.read(key: "apiKey") else {
+            return nil
+        }
+        let extURL = Self.normalizeServerURL(externalServerURL)
+        cacheKeyDelegate.updateEndpoints(primary: primaryURL, external: extURL)
+
+        let sessionCfg = sitzungsKonfiguration
+        let winner = await Self.chooseBestRoute(
+            primaryURL: primaryURL,
+            externalURL: extURL
+        ) { candidateURL, routeKind in
+            let timeout: TimeInterval = (routeKind == .primary) ? 1.5 : 4.0
+            let probe = ImmichAPIClient(
+                baseURL: candidateURL,
+                canonicalBaseURL: primaryURL,
+                apiKey: apiKey,
+                sessionConfiguration: sessionCfg,
+                anfrageFrist: timeout
+            )
+            return (try? await probe.ping()) == true
+        }
+
+        guard let winner else {
+            if state.isConnected {
+                goOffline()
+            }
+            return nil
+        }
+
+        if state.isOffline {
+            await reconnect()
+            return activeRoute
+        }
+
+        let changed = (winner.route != activeRoute) || (apiClient?.baseURL != winner.url)
+        apiClient?.updateBaseURL(winner.url, canonicalURL: primaryURL)
+        activeRoute = winner.route
+        if changed {
+            AppLogger.connection.info("Dual-URL Roaming: gewechselt auf \(winner.route.kurzName) (\(winner.url.absoluteString))")
+            NotificationCenter.default.post(name: .serverRouteDidChange, object: nil)
+        }
+        return winner.route
+    }
+
+    /// Ob der Pfad wirklich ins Netz führt. **`.satisfied` allein reicht nicht:**
+    /// Im Flugmodus bleibt die Tunnel-Schnittstelle eines VPN (Tailscale, `utun`)
+    /// bestehen, und der Pfad gilt weiter als erfüllt — die App blieb „Verbunden“,
+    /// während jede Anfrage scheiterte (Gerätebefund 26.10.2026). Darum zählt nur
+    /// ein Pfad über WLAN, Mobilfunk oder Kabel; ein VPN darüber meldet diese
+    /// Schnittstelle mit (`usesInterfaceType` sieht durch den Tunnel).
+    nonisolated static func netzNutzbar(_ path: NWPath) -> Bool {
+        netzNutzbar(
+            erfuellt: path.status == .satisfied,
+            physisch: [.wifi, .cellular, .wiredEthernet].contains { path.usesInterfaceType($0) }
+        )
+    }
+
+    nonisolated static func netzNutzbar(erfuellt: Bool, physisch: Bool) -> Bool {
+        erfuellt && physisch
     }
 
     private func stopNetworkMonitoring() {
@@ -464,6 +946,7 @@ final class ConnectionManager {
 
     private static func makeImagePipeline(
         apiKey: String,
+        delegate: (any ImagePipelineDelegate)? = nil,
         cacheSetup: @escaping (DataCache?) -> Void
     ) -> ImagePipeline {
         let sessionConfig = URLSessionConfiguration.default
@@ -518,7 +1001,7 @@ final class ConnectionManager {
 
         cacheSetup(thumbCache)
 
-        return ImagePipeline(configuration: config)
+        return ImagePipeline(configuration: config, delegate: delegate)
     }
 
     // MARK: - Cache Management (for Settings UI)

@@ -48,6 +48,20 @@ final class AlbumSyncManager {
     private let apiClient: ImmichAPIClient
     private var syncTask: Task<Void, Never>?
     private var serverFilenameCache: [String: [Asset]] = [:]
+    private var localActiveIds: Set<String> = []
+    private var localFilenameIndex: [String: [(id: String, createdAt: String)]] = [:]
+
+    private static let isoWithFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoWithoutFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     init(modelContext: ModelContext, uploadManager: UploadManager, apiClient: ImmichAPIClient) {
         self.modelContext = modelContext
@@ -103,9 +117,16 @@ final class AlbumSyncManager {
         let mappingByIdentifier: [String: ApplePhotosAssetMapping]
         if forceRecheck {
             mappingByIdentifier = [:]
+            localActiveIds = []
+            localFilenameIndex = [:]
         } else {
             let existingMappings = (try? modelContext.fetch(FetchDescriptor<ApplePhotosAssetMapping>())) ?? []
             mappingByIdentifier = Dictionary(uniqueKeysWithValues: existingMappings.map { ($0.localIdentifier, $0) })
+            let lookup = await Task.detached(priority: .userInitiated) {
+                GridIndexStore.shared.loadLocalSyncLookup()
+            }.value
+            localActiveIds = lookup.activeIds
+            localFilenameIndex = lookup.byFilename
         }
 
         do {
@@ -121,7 +142,7 @@ final class AlbumSyncManager {
             if !bundles.isEmpty {
                 try? await withThrowingTaskGroup(of: AlbumProcessResult.self) { group in
                     var iterator = bundles.makeIterator()
-                    for _ in 0..<3 {
+                    for _ in 0..<self.uploadManager.maxConcurrent {
                         if let (asset, resource) = iterator.next() {
                             group.addTask { @MainActor in
                                 if Task.isCancelled || self.progress.isCancelled { return .failed }
@@ -161,6 +182,7 @@ final class AlbumSyncManager {
                         }
                     }
                 }
+                try? modelContext.save()
             }
 
             // Add collected asset IDs to the Immich album in small batches so that a
@@ -224,6 +246,9 @@ final class AlbumSyncManager {
     /// Bewusst `internal` statt `private`, damit `AlbumSyncMatchingTests` sie direkt
     /// aufrufen kann — wie bei `findOnServer` daneben.
     func serverAssetExists(id: String, filename: String, createdAt: Date?) async -> Bool? {
+        if localActiveIds.contains(id) {
+            return true
+        }
         if let cached = serverFilenameCache[filename] {
             return cached.contains(where: { $0.id == id })
         }
@@ -241,6 +266,21 @@ final class AlbumSyncManager {
     // MARK: - Tier 2: Server Light-Check
 
     func findOnServer(filename: String, createdAt: Date?) async throws -> String? {
+        let tolerance: TimeInterval = 5
+        if let localEntries = localFilenameIndex[filename]?.filter({ localActiveIds.contains($0.id) }),
+           !localEntries.isEmpty {
+            if let createdAt {
+                if let match = localEntries.first(where: {
+                    guard let serverCreated = parseISODate($0.createdAt) else { return false }
+                    return abs(serverCreated.timeIntervalSince(createdAt)) <= tolerance
+                }) {
+                    return match.id
+                }
+            } else if let firstId = localEntries.first?.id {
+                return firstId
+            }
+        }
+
         let serverAssets: [Asset]
         if let cached = serverFilenameCache[filename] {
             serverAssets = cached
@@ -253,7 +293,6 @@ final class AlbumSyncManager {
         guard !serverAssets.isEmpty else { return nil }
         guard let createdAt else { return serverAssets.first?.id }
 
-        let tolerance: TimeInterval = 5
         if let exact = serverAssets.first(where: {
             guard let serverCreated = parseISODate($0.fileCreatedAt) else { return false }
             return abs(serverCreated.timeIntervalSince(createdAt)) <= tolerance
@@ -317,7 +356,8 @@ final class AlbumSyncManager {
         modelContext.upsertApplePhotosMapping(
             localIdentifier: localIdentifier,
             immichAssetId: immichAssetId,
-            modificationDate: modificationDate
+            modificationDate: modificationDate,
+            saveImmediately: false
         )
     }
 
@@ -354,12 +394,7 @@ final class AlbumSyncManager {
     }
 
     private func parseISODate(_ value: String) -> Date? {
-        let withFractional = ISO8601DateFormatter()
-        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = withFractional.date(from: value) { return date }
-        let withoutFractional = ISO8601DateFormatter()
-        withoutFractional.formatOptions = [.withInternetDateTime]
-        return withoutFractional.date(from: value)
+        Self.isoWithFractional.date(from: value) ?? Self.isoWithoutFractional.date(from: value)
     }
 
     private enum AlbumProcessResult {

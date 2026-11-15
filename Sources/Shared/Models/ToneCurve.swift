@@ -12,11 +12,18 @@ import Foundation
 /// Werte in 0…1, x strikt steigend (Mindestabstand 0.01 — sonst ist die Spline von
 /// `CIToneCurve` undefiniert). Jede andere Punktzahl ergibt die Identität: `CIToneCurve`
 /// kennt nur `inputPoint0` … `inputPoint4`.
-struct ToneCurve: Codable, Equatable, Sendable {
+struct ToneCurve: Codable, Equatable, Hashable, Sendable {
 
     static let pointCount = 5
 
     let points: [CGPoint]
+
+    func hash(into hasher: inout Hasher) {
+        for p in points {
+            hasher.combine(Double(p.x))
+            hasher.combine(Double(p.y))
+        }
+    }
 
     init(_ points: [CGPoint]) {
         guard points.count == Self.pointCount else {

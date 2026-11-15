@@ -28,6 +28,7 @@ struct FavSyncResult {
 @MainActor
 final class FavSyncProgress {
     var isRunning = false
+    var isCancelled = false
     var result    = FavSyncResult()
     var processed = 0
 
@@ -49,7 +50,23 @@ final class FavoritesSyncManager {
     private let uploadManager: UploadManager
     private let modelContext: ModelContext
     private let logger = Logger(subsystem: "com.ralksta.immich-mac", category: "FavoritesSync")
+    private var syncTask: Task<FavSyncResult, Never>?
     private var serverFilenameCache: [String: [Asset]] = [:]
+    private var localActiveIds: Set<String> = []
+    private var localFavoriteIds: Set<String> = []
+    private var localFilenameIndex: [String: [(id: String, createdAt: String)]] = [:]
+
+    private static let isoWithFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoWithoutFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     init(apiClient: ImmichAPIClient, uploadManager: UploadManager, modelContext: ModelContext) {
         self.apiClient     = apiClient
@@ -62,13 +79,22 @@ final class FavoritesSyncManager {
     @discardableResult
     func syncFavorites() -> Task<FavSyncResult, Never> {
         guard !progress.isRunning else { return Task { self.progress.result } }
-        return Task { await self.run() }
+        let task = Task { await self.run() }
+        syncTask = task
+        return task
+    }
+
+    func cancel() {
+        syncTask?.cancel()
+        progress.isCancelled = true
+        progress.isRunning = false
     }
 
     // MARK: – Core
 
     private func run() async -> FavSyncResult {
         progress.isRunning = true
+        progress.isCancelled = false
         progress.result    = FavSyncResult()
         progress.processed = 0
         serverFilenameCache = [:]
@@ -76,6 +102,15 @@ final class FavoritesSyncManager {
         // 1. Mapping-Index: localIdentifier → immichAssetId
         let mappings = (try? modelContext.fetch(FetchDescriptor<ApplePhotosAssetMapping>())) ?? []
         let mappingIndex = Dictionary(uniqueKeysWithValues: mappings.map { ($0.localIdentifier, $0.immichAssetId) })
+
+        // Lokaler SQLite-Lookup spart Netzwerk-Abfragen für bereits bekannte Favoriten
+        // und Dateinamen.
+        let lookup = await Task.detached(priority: .userInitiated) {
+            GridIndexStore.shared.loadLocalSyncLookup()
+        }.value
+        localActiveIds = lookup.activeIds
+        localFavoriteIds = lookup.favoriteIds
+        localFilenameIndex = lookup.byFilename
 
         // PHAsset-Fetch auf Background-Queue (verhindert Main-Thread-Warnung)
         let assets = await fetchFavoriteAssets()
@@ -90,32 +125,15 @@ final class FavoritesSyncManager {
         if !assets.isEmpty {
             try? await withThrowingTaskGroup(of: FavProcessResult.self) { group in
                 var iterator = assets.makeIterator()
-                for _ in 0..<3 {
+                for _ in 0..<self.uploadManager.maxConcurrent {
                     if let asset = iterator.next() {
                         group.addTask { @MainActor in
-                            if Task.isCancelled { return .error }
-                            do {
-                                let (immichId, wasUploaded, isNewMapping) = try await self.resolveOrUpload(
-                                    asset: asset,
-                                    mappingIndex: mappingIndex,
-                                    runDir: runDir
-                                )
-                                let localId = asset.localIdentifier
-                                let detail = try await self.apiClient.getAssetDetail(id: immichId)
-                                if detail.isFavorite {
-                                    return wasUploaded
-                                        ? .uploadedAndMarked(localIdentifier: localId, isNewMapping: isNewMapping)
-                                        : .alreadyFavorite(localIdentifier: localId, isNewMapping: isNewMapping)
-                                } else {
-                                    try await self.apiClient.toggleFavorite(assetId: immichId, isFavorite: true)
-                                    self.logger.info("★ Favorit gesetzt: \(immichId)")
-                                    return .marked(localIdentifier: localId, isNewMapping: isNewMapping)
-                                }
-                            } catch {
-                                let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename ?? "?"
-                                self.logger.warning("Fehler für \(filename): \(error.localizedDescription)")
-                                return .error
-                            }
+                            if Task.isCancelled || self.progress.isCancelled { return .error }
+                            return await self.processFavoriteAsset(
+                                asset: asset,
+                                mappingIndex: mappingIndex,
+                                runDir: runDir
+                            )
                         }
                     }
                 }
@@ -134,35 +152,19 @@ final class FavoritesSyncManager {
                         self.progress.result.errors += 1
                     }
                     self.progress.processed += 1
-                    if let nextAsset = iterator.next() {
+                    if !self.progress.isCancelled, let nextAsset = iterator.next() {
                         group.addTask { @MainActor in
-                            if Task.isCancelled { return .error }
-                            do {
-                                let (immichId, wasUploaded, isNewMapping) = try await self.resolveOrUpload(
-                                    asset: nextAsset,
-                                    mappingIndex: mappingIndex,
-                                    runDir: runDir
-                                )
-                                let localId = nextAsset.localIdentifier
-                                let detail = try await self.apiClient.getAssetDetail(id: immichId)
-                                if detail.isFavorite {
-                                    return wasUploaded
-                                        ? .uploadedAndMarked(localIdentifier: localId, isNewMapping: isNewMapping)
-                                        : .alreadyFavorite(localIdentifier: localId, isNewMapping: isNewMapping)
-                                } else {
-                                    try await self.apiClient.toggleFavorite(assetId: immichId, isFavorite: true)
-                                    self.logger.info("★ Favorit gesetzt: \(immichId)")
-                                    return .marked(localIdentifier: localId, isNewMapping: isNewMapping)
-                                }
-                            } catch {
-                                let filename = PHAssetResource.assetResources(for: nextAsset).first?.originalFilename ?? "?"
-                                self.logger.warning("Fehler für \(filename): \(error.localizedDescription)")
-                                return .error
-                            }
+                            if Task.isCancelled || self.progress.isCancelled { return .error }
+                            return await self.processFavoriteAsset(
+                                asset: nextAsset,
+                                mappingIndex: mappingIndex,
+                                runDir: runDir
+                            )
                         }
                     }
                 }
             }
+            try? modelContext.save()
         }
 
         // Trigger a background sync so newly-uploaded assets and updated favorite
@@ -178,10 +180,51 @@ final class FavoritesSyncManager {
         // Apple-Photos-Sync in `UploadManager`).
         progress.isRunning = false
 
-        await ApplePhotoDeletionService(modelContext: modelContext, apiClient: apiClient)
-            .considerDeletion(newlyMappedLocalIdentifiers: newlyMappedLocalIdentifiers)
+        if !Task.isCancelled && !progress.isCancelled {
+            await ApplePhotoDeletionService(modelContext: modelContext, apiClient: apiClient)
+                .considerDeletion(newlyMappedLocalIdentifiers: newlyMappedLocalIdentifiers)
+        }
 
         return progress.result
+    }
+
+    private func processFavoriteAsset(
+        asset: PHAsset,
+        mappingIndex: [String: String],
+        runDir: URL
+    ) async -> FavProcessResult {
+        do {
+            let (immichId, wasUploaded, isNewMapping) = try await resolveOrUpload(
+                asset: asset,
+                mappingIndex: mappingIndex,
+                runDir: runDir
+            )
+            let localId = asset.localIdentifier
+            // Lokaler Fast-Path: Wenn das Asset bereits im lokalen Index als Favorit
+            // bekannt ist, sparen wir den Netzwerk-Roundtrip zu `getAssetDetail`.
+            if !wasUploaded && localFavoriteIds.contains(immichId) {
+                return .alreadyFavorite(localIdentifier: localId, isNewMapping: isNewMapping)
+            }
+            let detail = try await apiClient.getAssetDetail(id: immichId)
+            if detail.isFavorite {
+                localFavoriteIds.insert(immichId)
+                return wasUploaded
+                    ? .uploadedAndMarked(localIdentifier: localId, isNewMapping: isNewMapping)
+                    : .alreadyFavorite(localIdentifier: localId, isNewMapping: isNewMapping)
+            } else {
+                try await apiClient.toggleFavorite(assetId: immichId, isFavorite: true)
+                localFavoriteIds.insert(immichId)
+                GridIndexStore.shared.updateFavorite(id: immichId, isFavorite: true)
+                logger.info("★ Favorit gesetzt: \(immichId)")
+                return wasUploaded
+                    ? .uploadedAndMarked(localIdentifier: localId, isNewMapping: isNewMapping)
+                    : .marked(localIdentifier: localId, isNewMapping: isNewMapping)
+            }
+        } catch {
+            let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename ?? "?"
+            logger.warning("Fehler für \(filename): \(error.localizedDescription)")
+            return .error
+        }
     }
 
     // MARK: – Resolve or Upload
@@ -228,7 +271,8 @@ final class FavoritesSyncManager {
             modelContext.upsertApplePhotosMapping(
                 localIdentifier: asset.localIdentifier,
                 immichAssetId: found,
-                modificationDate: asset.modificationDate
+                modificationDate: asset.modificationDate,
+                saveImmediately: false
             )
             return (found, false, true)
         }
@@ -248,6 +292,23 @@ final class FavoritesSyncManager {
     // MARK: – Server Search
 
     private func findOnServer(filename: String, createdAt: Date?) async throws -> String? {
+        let tolerance: TimeInterval = 60
+        if let localEntries = localFilenameIndex[filename]?.filter({ localActiveIds.contains($0.id) }),
+           !localEntries.isEmpty {
+            if let createdAt {
+                if let match = localEntries.first(where: {
+                    let serverDate = Self.isoWithFractional.date(from: $0.createdAt)
+                        ?? Self.isoWithoutFractional.date(from: $0.createdAt)
+                    guard let serverDate else { return false }
+                    return abs(serverDate.timeIntervalSince(createdAt)) <= tolerance
+                }) {
+                    return match.id
+                }
+            } else if let firstId = localEntries.first?.id {
+                return firstId
+            }
+        }
+
         let serverAssets: [Asset]
         if let cached = serverFilenameCache[filename] {
             serverAssets = cached
@@ -258,7 +319,6 @@ final class FavoritesSyncManager {
         guard !serverAssets.isEmpty else { return nil }
         guard let createdAt else { return serverAssets.first?.id }
 
-        let tolerance: TimeInterval = 60
         return serverAssets.first(where: {
             guard let d = $0.createdDate else { return false }
             return abs(d.timeIntervalSince(createdAt)) <= tolerance
@@ -304,7 +364,8 @@ final class FavoritesSyncManager {
         modelContext.upsertApplePhotosMapping(
             localIdentifier: localIdentifier,
             immichAssetId: immichId,
-            modificationDate: modificationDate
+            modificationDate: modificationDate,
+            saveImmediately: false
         )
 
         // UploadManager posts .assetsDidChange which writes to GridIndexStore, but only

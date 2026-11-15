@@ -581,23 +581,31 @@ final class PhonePhotoFeed {
 
     // MARK: - Änderungen aus dem Einzelbild
 
-    /// Nimmt ein in den Papierkorb gelegtes Asset aus der Liste.
+    /// Nimmt in den Papierkorb gelegte Assets aus der Liste.
     ///
     /// Ruft ``PhonePhotoFeedView`` über den `onGeloescht`-Rückruf von
-    /// ``PhoneAssetView`` auf. Vollständiges Neugruppieren, nicht bloß ein
-    /// `remove` in `eintraege`: Jede Kachel trägt ihren `flachIndex`, und der
-    /// ist nach dem Herausnehmen für alle folgenden um eins verschoben —
-    /// bliebe er stehen, öffnete ein Tipp danach das falsche Bild.
+    /// ``PhoneAssetView`` oder ``PhoneSwipeView`` auf. Vollständiges
+    /// Neugruppieren, nicht bloß ein `remove` in `eintraege`: Jede Kachel trägt
+    /// ihren `flachIndex`, und der ist nach dem Herausnehmen für alle folgenden
+    /// um eins verschoben — bliebe er stehen, öffnete ein Tipp danach das
+    /// falsche Bild.
     ///
-    /// `gesehen` verliert die ID wieder, damit ein späteres Wiederherstellen
+    /// `gesehen` verliert die IDs wieder, damit ein späteres Wiederherstellen
     /// aus dem Papierkorb (am Mac oder im Web) beim nächsten Neuladen nicht
     /// an der Entdopplung hängen bleibt.
     func entferne(assetId: String) async {
+        await entferne(assetIds: [assetId])
+    }
+
+    func entferne(assetIds: Set<String>) async {
+        guard !assetIds.isEmpty else { return }
         let vorher = assets.count
-        assets.removeAll { $0.id == assetId }
+        assets.removeAll { assetIds.contains($0.id) }
         guard assets.count != vorher else { return }
-        gesehen.remove(assetId)
-        favoritenAenderungen[assetId] = nil
+        for id in assetIds {
+            gesehen.remove(id)
+            favoritenAenderungen[id] = nil
+        }
         await neuGruppieren(meinLauf: generation)
     }
 
